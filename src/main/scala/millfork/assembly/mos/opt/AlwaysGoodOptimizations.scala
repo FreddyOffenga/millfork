@@ -10,6 +10,7 @@ import millfork.assembly.mos.AddrMode._
 import millfork.env._
 import millfork.error.FatalErrorReporting
 import millfork.node.LiteralExpression
+import millfork.node.MosNiceFunctionProperty.DoesntChangeA
 
 /**
   * These optimizations should not remove opportunities for more complex optimizations to trigger.
@@ -735,31 +736,31 @@ object AlwaysGoodOptimizations {
       NoopDiscardsFlags.* ~
       (HasOpcode(LABEL) & MatchParameter(0)) ~~> (c => c.last :: Nil),
     (HasOpcodeIn(AllDirectJumps) & HasAddrModeIn(Absolute, Relative, LongAbsolute, LongRelative) & MatchParameter(0) & Elidable) ~
-      (HasOpcode(LABEL) & Not(MatchParameter(0))).* ~
+      (HasOpcodeIn(LABEL, CHANGED_MEM) & Not(MatchParameter(0))).* ~
       (HasOpcode(LABEL) & MatchParameter(0)) ~~> (_.tail),
     (HasOpcode(BEQ) & MatchParameter(0) & Elidable) ~ HasOpcode(BNE) ~
-      (HasOpcode(LABEL) & Not(MatchParameter(0))).* ~
+      (HasOpcodeIn(LABEL, CHANGED_MEM) & Not(MatchParameter(0))).* ~
       (HasOpcode(LABEL) & MatchParameter(0)) ~~> (_.tail),
     (HasOpcode(BNE) & MatchParameter(0) & Elidable) ~ HasOpcode(BEQ) ~
-      (HasOpcode(LABEL) & Not(MatchParameter(0))).* ~
+      (HasOpcodeIn(LABEL, CHANGED_MEM) & Not(MatchParameter(0))).* ~
       (HasOpcode(LABEL) & MatchParameter(0)) ~~> (_.tail),
     (HasOpcode(BCC) & MatchParameter(0) & Elidable) ~ HasOpcode(BCS) ~
-      (HasOpcode(LABEL) & Not(MatchParameter(0))).* ~
+      (HasOpcodeIn(LABEL, CHANGED_MEM) & Not(MatchParameter(0))).* ~
       (HasOpcode(LABEL) & MatchParameter(0)) ~~> (_.tail),
     (HasOpcode(BCS) & MatchParameter(0) & Elidable) ~ HasOpcode(BCC) ~
-      (HasOpcode(LABEL) & Not(MatchParameter(0))).* ~
+      (HasOpcodeIn(LABEL, CHANGED_MEM) & Not(MatchParameter(0))).* ~
       (HasOpcode(LABEL) & MatchParameter(0)) ~~> (_.tail),
     (HasOpcode(BMI) & MatchParameter(0) & Elidable) ~ HasOpcode(BPL) ~
-      (HasOpcode(LABEL) & Not(MatchParameter(0))).* ~
+      (HasOpcodeIn(LABEL, CHANGED_MEM) & Not(MatchParameter(0))).* ~
       (HasOpcode(LABEL) & MatchParameter(0)) ~~> (_.tail),
     (HasOpcode(BPL) & MatchParameter(0) & Elidable) ~ HasOpcode(BMI) ~
-      (HasOpcode(LABEL) & Not(MatchParameter(0))).* ~
+      (HasOpcodeIn(LABEL, CHANGED_MEM) & Not(MatchParameter(0))).* ~
       (HasOpcode(LABEL) & MatchParameter(0)) ~~> (_.tail),
     (HasOpcode(BVS) & MatchParameter(0) & Elidable) ~ HasOpcode(BVC) ~
-      (HasOpcode(LABEL) & Not(MatchParameter(0))).* ~
+      (HasOpcodeIn(LABEL, CHANGED_MEM) & Not(MatchParameter(0))).* ~
       (HasOpcode(LABEL) & MatchParameter(0)) ~~> (_.tail),
     (HasOpcode(BVC) & MatchParameter(0) & Elidable) ~ HasOpcode(BVS) ~
-      (HasOpcode(LABEL) & Not(MatchParameter(0))).* ~
+      (HasOpcodeIn(LABEL, CHANGED_MEM) & Not(MatchParameter(0))).* ~
       (HasOpcode(LABEL) & MatchParameter(0)) ~~> (_.tail),
   )
 
@@ -1180,8 +1181,8 @@ object AlwaysGoodOptimizations {
       }: _*
   )
 
-  val PointlessRegisterTransfers = new RuleBasedAssemblyOptimization("Pointless register transfers",
-    needsFlowInfo = FlowInfoRequirement.NoRequirement,
+  lazy val PointlessRegisterTransfers = new RuleBasedAssemblyOptimization("Pointless register transfers",
+    needsFlowInfo = FlowInfoRequirement.BackwardFlow,
     HasOpcode(TYA) ~ (Elidable & HasOpcodeIn(TYA, TAY)) ~~> (_.init),
     HasOpcode(TXA) ~ (Elidable & HasOpcodeIn(TXA, TAX)) ~~> (_.init),
     HasOpcode(TAY) ~ (Elidable & HasOpcodeIn(TYA, TAY)) ~~> (_.init),
@@ -1196,6 +1197,10 @@ object AlwaysGoodOptimizations {
       (Elidable & HasOpcodeIn(TYA, TAY)) ~~> (_.init),
     HasOpcode(TSX) ~ (Not(ChangesX) & Not(ChangesS) & Linear).* ~ (Elidable & HasOpcodeIn(TXS, TSX)) ~~> (_.init),
     HasOpcode(TXS) ~ (Not(ChangesX) & Not(ChangesS) & Linear).* ~ (Elidable & HasOpcodeIn(TXS, TSX)) ~~> (_.init),
+    HasOpcodeIn(TXA, TAX) ~ (Not(ChangesA) & Not(ChangesX) & Linear).* ~ (Elidable & HasOpcode(TXA) & DoesntMatterWhatItDoesWith(State.Z, State.N)) ~~> (_.init),
+    HasOpcodeIn(TXA, TAX) ~ (Not(ChangesA) & Not(ChangesX) & Linear).* ~ (Elidable & HasOpcode(TAX) & DoesntMatterWhatItDoesWith(State.Z, State.N)) ~~> (_.init),
+    HasOpcodeIn(TYA, TAY) ~ (Not(ChangesA) & Not(ChangesY) & Linear).* ~ (Elidable & HasOpcode(TYA) & DoesntMatterWhatItDoesWith(State.Z, State.N)) ~~> (_.init),
+    HasOpcodeIn(TYA, TAY) ~ (Not(ChangesA) & Not(ChangesY) & Linear).* ~ (Elidable & HasOpcode(TAY) & DoesntMatterWhatItDoesWith(State.Z, State.N)) ~~> (_.init),
   )
 
   lazy val PointlessRegisterTransfersBeforeStore = new RuleBasedAssemblyOptimization("Pointless register transfers from flow",
@@ -1374,103 +1379,103 @@ object AlwaysGoodOptimizations {
     needsFlowInfo = FlowInfoRequirement.BackwardFlow,
 
     (HasOpcodeIn(LDA, STA) & HasAddrMode(Immediate) & MatchParameter(1)) ~
-      (Linear & Not(ChangesA) & Not(HasOpcode(DISCARD_AF))).* ~
+      (Linear & Not(ChangesA) & Not(HasOpcode(DISCARD_AF)) | HasOpcodeIn(OpcodeClasses.ShortConditionalBranching)).* ~
       (Elidable & HasOpcode(LDA) & HasAddrMode(Immediate) & MatchParameter(1) & DoesntMatterWhatItDoesWith(State.N, State.Z)) ~~> (_.init),
 
     (HasOpcodeIn(LDX, STX) & HasAddrMode(Immediate) & MatchParameter(1)) ~
-      (Linear & Not(ChangesX) & Not(HasOpcode(DISCARD_XF))).* ~
+      (Linear & Not(ChangesX) & Not(HasOpcode(DISCARD_XF)) | HasOpcodeIn(OpcodeClasses.ShortConditionalBranching)).* ~
       (Elidable & HasOpcode(LDX) & HasAddrMode(Immediate) & MatchParameter(1) & DoesntMatterWhatItDoesWith(State.N, State.Z)) ~~> (_.init),
 
     (HasOpcodeIn(LDY, STY) & HasAddrMode(Immediate) & MatchParameter(1)) ~
-      (Linear & Not(ChangesY) & Not(HasOpcode(DISCARD_YF))).* ~
+      (Linear & Not(ChangesY) & Not(HasOpcode(DISCARD_YF)) | HasOpcodeIn(OpcodeClasses.ShortConditionalBranching)).* ~
       (Elidable & HasOpcode(LDY) & HasAddrMode(Immediate) & MatchParameter(1) & DoesntMatterWhatItDoesWith(State.N, State.Z)) ~~> (_.init),
 
     (HasOpcodeIn(LDA, STA) & MatchAddrMode(0) & MatchParameter(1)) ~
-      (Linear & Not(ChangesA) & Not(HasOpcode(DISCARD_AF)) & DoesntChangeIndexingInAddrMode(0) & DoesntChangeMemoryAt(0, 1)).* ~
+      (Linear & Not(ChangesA) & Not(HasOpcode(DISCARD_AF)) & DoesntChangeIndexingInAddrMode(0) & DoesntChangeMemoryAt(0, 1) | HasOpcodeIn(OpcodeClasses.ShortConditionalBranching)).* ~
       (Elidable & HasOpcode(LDA) & MatchAddrMode(0) & MatchParameter(1) & DoesntMatterWhatItDoesWith(State.N, State.Z)) ~~> (_.init),
 
     (HasOpcodeIn(LDX, STX) & MatchAddrMode(0) & MatchParameter(1)) ~
-      (Linear & Not(ChangesX) & Not(HasOpcode(DISCARD_XF)) & DoesntChangeIndexingInAddrMode(0) & DoesntChangeMemoryAt(0, 1)).* ~
+      (Linear & Not(ChangesX) & Not(HasOpcode(DISCARD_XF)) & DoesntChangeIndexingInAddrMode(0) & DoesntChangeMemoryAt(0, 1) | HasOpcodeIn(OpcodeClasses.ShortConditionalBranching)).* ~
       (Elidable & HasOpcode(LDX) & MatchAddrMode(0) & MatchParameter(1) & DoesntMatterWhatItDoesWith(State.N, State.Z)) ~~> (_.init),
 
     (HasOpcodeIn(LDY, STY) & MatchAddrMode(0) & MatchParameter(1)) ~
-      (Linear & Not(ChangesY) & Not(HasOpcode(DISCARD_YF)) & DoesntChangeIndexingInAddrMode(0) & DoesntChangeMemoryAt(0, 1)).* ~
+      (Linear & Not(ChangesY) & Not(HasOpcode(DISCARD_YF)) & DoesntChangeIndexingInAddrMode(0) & DoesntChangeMemoryAt(0, 1) | HasOpcodeIn(OpcodeClasses.ShortConditionalBranching)).* ~
       (Elidable & HasOpcode(LDY) & MatchAddrMode(0) & MatchParameter(1) & DoesntMatterWhatItDoesWith(State.N, State.Z)) ~~> (_.init),
 
     (HasOpcode(LDA) & HasAddrMode(Immediate) & MatchParameter(1)) ~
-      (Linear & Not(ChangesA) & Not(ChangesNAndZ) & Not(HasOpcode(DISCARD_AF))).* ~
+      (Linear & Not(ChangesA) & Not(ChangesNAndZ) & Not(HasOpcode(DISCARD_AF)) | HasOpcodeIn(OpcodeClasses.ShortConditionalBranching)).* ~
       (Elidable & HasOpcode(LDA) & HasAddrMode(Immediate) & MatchParameter(1)) ~~> (_.init),
 
     (HasOpcode(LDX) & HasAddrMode(Immediate) & MatchParameter(1)) ~
-      (Linear & Not(ChangesX) & Not(ChangesNAndZ) & Not(HasOpcode(DISCARD_XF))).* ~
+      (Linear & Not(ChangesX) & Not(ChangesNAndZ) & Not(HasOpcode(DISCARD_XF)) | HasOpcodeIn(OpcodeClasses.ShortConditionalBranching)).* ~
       (Elidable & HasOpcode(LDX) & HasAddrMode(Immediate) & MatchParameter(1)) ~~> (_.init),
 
     (HasOpcode(LDY) & HasAddrMode(Immediate) & MatchParameter(1)) ~
-      (Linear & Not(ChangesY) & Not(ChangesNAndZ) & Not(HasOpcode(DISCARD_YF))).* ~
+      (Linear & Not(ChangesY) & Not(ChangesNAndZ) & Not(HasOpcode(DISCARD_YF)) | HasOpcodeIn(OpcodeClasses.ShortConditionalBranching)).* ~
       (Elidable & HasOpcode(LDY) & HasAddrMode(Immediate) & MatchParameter(1)) ~~> (_.init),
 
     (HasOpcode(LDA) & MatchAddrMode(0) & MatchParameter(1)) ~
-      (Linear & Not(ChangesA) & Not(ChangesNAndZ) & Not(HasOpcode(DISCARD_AF)) & DoesntChangeIndexingInAddrMode(0) & DoesntChangeMemoryAt(0, 1)).* ~
+      (Linear & Not(ChangesA) & Not(ChangesNAndZ) & Not(HasOpcode(DISCARD_AF)) & DoesntChangeIndexingInAddrMode(0) & DoesntChangeMemoryAt(0, 1) | HasOpcodeIn(OpcodeClasses.ShortConditionalBranching)).* ~
       (Elidable & HasOpcode(LDA) & MatchAddrMode(0) & MatchParameter(1)) ~~> (_.init),
 
     (HasOpcode(LDX) & MatchAddrMode(0) & MatchParameter(1)) ~
-      (Linear & Not(ChangesX) & Not(ChangesNAndZ) & Not(HasOpcode(DISCARD_XF)) & DoesntChangeIndexingInAddrMode(0) & DoesntChangeMemoryAt(0, 1)).* ~
+      (Linear & Not(ChangesX) & Not(ChangesNAndZ) & Not(HasOpcode(DISCARD_XF)) & DoesntChangeIndexingInAddrMode(0) & DoesntChangeMemoryAt(0, 1) | HasOpcodeIn(OpcodeClasses.ShortConditionalBranching)).* ~
       (Elidable & HasOpcode(LDX) & MatchAddrMode(0) & MatchParameter(1)) ~~> (_.init),
 
     (HasOpcode(LDY) & MatchAddrMode(0) & MatchParameter(1)) ~
-      (Linear & Not(ChangesY) & Not(ChangesNAndZ) & Not(HasOpcode(DISCARD_YF)) & DoesntChangeIndexingInAddrMode(0) & DoesntChangeMemoryAt(0, 1)).* ~
+      (Linear & Not(ChangesY) & Not(ChangesNAndZ) & Not(HasOpcode(DISCARD_YF)) & DoesntChangeIndexingInAddrMode(0) & DoesntChangeMemoryAt(0, 1) | HasOpcodeIn(OpcodeClasses.ShortConditionalBranching)).* ~
       (Elidable & HasOpcode(LDY) & MatchAddrMode(0) & MatchParameter(1)) ~~> (_.init),
 
     (HasOpcodeIn(LDA, STA) & MatchAddrMode(0) & MatchParameter(1)) ~
       (ShortConditionalBranching & MatchParameter(2)) ~
-      (Linear & Not(ChangesA) & Not(HasOpcode(DISCARD_AF)) & DoesntChangeIndexingInAddrMode(0) & DoesntChangeMemoryAt(0, 1)).* ~
+      (Linear & Not(ChangesA) & Not(HasOpcode(DISCARD_AF)) & DoesntChangeIndexingInAddrMode(0) & DoesntChangeMemoryAt(0, 1) | HasOpcodeIn(OpcodeClasses.ShortConditionalBranching)).* ~
       (HasOpcode(LABEL) & MatchParameter(2)) ~
       (Elidable & HasOpcode(LDA) & MatchAddrMode(0) & MatchParameter(1) & DoesntMatterWhatItDoesWith(State.N, State.Z)) ~~> (_.init),
 
     (HasOpcodeIn(LDX, STX) & MatchAddrMode(0) & MatchParameter(1)) ~
       (ShortConditionalBranching & MatchParameter(2)) ~
-      (Linear & Not(ChangesX) & Not(HasOpcode(DISCARD_XF)) & DoesntChangeIndexingInAddrMode(0) & DoesntChangeMemoryAt(0, 1)).* ~
+      (Linear & Not(ChangesX) & Not(HasOpcode(DISCARD_XF)) & DoesntChangeIndexingInAddrMode(0) & DoesntChangeMemoryAt(0, 1) | HasOpcodeIn(OpcodeClasses.ShortConditionalBranching)).* ~
       (HasOpcode(LABEL) & MatchParameter(2)) ~
       (Elidable & HasOpcode(LDX) & MatchAddrMode(0) & MatchParameter(1) & DoesntMatterWhatItDoesWith(State.N, State.Z)) ~~> (_.init),
 
     (HasOpcodeIn(LDY, STY) & MatchAddrMode(0) & MatchParameter(1)) ~
       (ShortConditionalBranching & MatchParameter(2)) ~
-      (Linear & Not(ChangesY) & Not(HasOpcode(DISCARD_YF)) & DoesntChangeIndexingInAddrMode(0) & DoesntChangeMemoryAt(0, 1)).* ~
+      (Linear & Not(ChangesY) & Not(HasOpcode(DISCARD_YF)) & DoesntChangeIndexingInAddrMode(0) & DoesntChangeMemoryAt(0, 1) | HasOpcodeIn(OpcodeClasses.ShortConditionalBranching)).* ~
       (HasOpcode(LABEL) & MatchParameter(2)) ~
       (Elidable & HasOpcode(LDY) & MatchAddrMode(0) & MatchParameter(1) & DoesntMatterWhatItDoesWith(State.N, State.Z)) ~~> (_.init),
 
     (HasOpcodeIn(LDA, STA) & MatchAddrMode(0) & MatchParameter(1)) ~
       (ShortBranching & MatchParameter(3)) ~
-      (Linear & Not(ChangesA) & Not(HasOpcode(DISCARD_AF)) & DoesntChangeIndexingInAddrMode(0) & DoesntChangeMemoryAt(0, 1)).* ~
+      (Linear & Not(ChangesA) & Not(HasOpcode(DISCARD_AF)) & DoesntChangeIndexingInAddrMode(0) & DoesntChangeMemoryAt(0, 1) | HasOpcodeIn(OpcodeClasses.ShortConditionalBranching)).* ~
       (HasOpcode(LABEL) & MatchParameter(3) & HasCallerCount(1)) ~
       (Elidable & HasOpcode(LDA) & MatchAddrMode(0) & MatchParameter(1) & DoesntMatterWhatItDoesWith(State.N, State.Z)) ~~> (_.init),
 
     HasOpcodeIn(TXA, TAX, LAX, LXA) ~
-      (Not(HasOpcodeIn(TXA, TAX)) & Linear & Not(ChangesA) & Not(ChangesX)).* ~
+      (Not(HasOpcodeIn(TXA, TAX)) & Linear & Not(ChangesA) & Not(ChangesX) | HasOpcodeIn(OpcodeClasses.ShortConditionalBranching)).* ~
       (Elidable & HasOpcodeIn(TXA, TAX) & DoesntMatterWhatItDoesWith(State.N, State.Z)) ~~> (_.init),
 
     HasOpcodeIn(TYA, TAY) ~
-      (Not(HasOpcodeIn(TYA, TAY)) & Linear & Not(ChangesA) & Not(ChangesY)).* ~
+      (Not(HasOpcodeIn(TYA, TAY)) & Linear & Not(ChangesA) & Not(ChangesY) | HasOpcodeIn(OpcodeClasses.ShortConditionalBranching)).* ~
       (Elidable & HasOpcodeIn(TYA, TAY) & DoesntMatterWhatItDoesWith(State.N, State.Z)) ~~> (_.init),
 
     (HasOpcodeIn(STA, LDA) & HasAddrModeIn(ZeroPage, Absolute) & MatchAddrMode(0) & MatchParameter(1)) ~
-      (Linear & Not(HasOpcode(TAX)) & Not(ChangesA) & DoesntChangeMemoryAt(0, 1)).* ~
+      (Linear & Not(HasOpcode(TAX)) & Not(ChangesA) & DoesntChangeMemoryAt(0, 1) | HasOpcodeIn(OpcodeClasses.ShortConditionalBranching)).* ~
       HasOpcode(TAX) ~
       (LinearOrBranch & Not(ChangesX) & DoesntChangeMemoryAt(0, 1)).* ~
       (Elidable & HasOpcode(LDX) & HasAddrModeIn(ZeroPage, Absolute) & MatchParameter(1) & DoesntMatterWhatItDoesWith(State.N, State.Z)) ~~> (_.init),
 
     (HasOpcodeIn(STA, LDA) & HasAddrModeIn(ZeroPage, Absolute) & MatchAddrMode(0) & MatchParameter(1)) ~
-      (Linear & Not(HasOpcode(TAY)) & Not(ChangesA) & DoesntChangeMemoryAt(0, 1)).* ~
+      (Linear & Not(HasOpcode(TAY)) & Not(ChangesA) & DoesntChangeMemoryAt(0, 1) | HasOpcodeIn(OpcodeClasses.ShortConditionalBranching)).* ~
       HasOpcode(TAY) ~
       (LinearOrBranch & Not(ChangesY) & DoesntChangeMemoryAt(0, 1)).* ~
       (Elidable & HasOpcode(LDY) & HasAddrModeIn(ZeroPage, Absolute) & MatchParameter(1) & DoesntMatterWhatItDoesWith(State.N, State.Z)) ~~> (_.init),
 
     (HasOpcodeIn(LDA, STA) & MatchAddrMode(0) & MatchParameter(1)) ~
-      (Linear & Not(ChangesA) & Not(HasOpcode(DISCARD_AF)) & DoesntChangeIndexingInAddrMode(0) & DoesNotConcernMemoryAt(0, 1)).* ~
+      (Linear & Not(ChangesA) & Not(HasOpcode(DISCARD_AF)) & DoesntChangeIndexingInAddrMode(0) & DoesNotConcernMemoryAt(0, 1) | HasOpcodeIn(OpcodeClasses.ShortConditionalBranching)).* ~
       (Elidable & HasOpcode(LDX) & MatchAddrMode(0) & MatchParameter(1)) ~~> (code => code.init :+ AssemblyLine.implied(TAX)),
 
     (HasOpcodeIn(LDA, STA) & MatchAddrMode(0) & MatchParameter(1)) ~
-      (Linear & Not(ChangesA) & Not(HasOpcode(DISCARD_AF)) & DoesntChangeIndexingInAddrMode(0) & DoesNotConcernMemoryAt(0, 1)).* ~
+      (Linear & Not(ChangesA) & Not(HasOpcode(DISCARD_AF)) & DoesntChangeIndexingInAddrMode(0) & DoesNotConcernMemoryAt(0, 1) | HasOpcodeIn(OpcodeClasses.ShortConditionalBranching)).* ~
       (Elidable & HasOpcode(LDY) & MatchAddrMode(0) & MatchParameter(1)) ~~> (code => code.init :+ AssemblyLine.implied(TAY)),
   )
 
@@ -1599,6 +1604,15 @@ object AlwaysGoodOptimizations {
       (HasOpcodeIn(AND, ANC) & MatchNumericImmediate(1)) ~
       Where(ctx => ctx.get[Int](1).&(1) == 0)~~> { (lines, ctx) =>
       lines.head.copy(opcode = ASL) :: lines.tail
+    },
+    (Elidable & HasOpcode(LDA)) ~
+    (Elidable & HasOpcode(AND) & HasAddrMode(Immediate) & MatchParameter(0)) ~
+    (Elidable & HasOpcode(BNE) & MatchParameter(1)) ~
+    (Elidable & HasOpcode(LDA)) ~
+    (Elidable & HasOpcode(AND) & HasAddrMode(Immediate) & MatchParameter(0)) ~
+      (Elidable & HasOpcode(BEQ)) ~
+      (Elidable & HasOpcode(LABEL) & MatchParameter(1)) ~~> { (code, ctx) =>
+      List(code.head, code(3).copy(opcode = ORA)) ++ code.drop(4)
     },
   )
 
@@ -1839,8 +1853,8 @@ object AlwaysGoodOptimizations {
     val ifSet = Elidable & HasOpcode(LDA) & HasImmediate(if (zeroIfSet) 0 else nonZero)
     val ifClear = Elidable & HasOpcode(LDA) & HasImmediate(if (zeroIfSet) nonZero else 0)
     val jump = Elidable & HasOpcodeIn(Set(JMP, if (firstSet) BCS else BCC, if (zeroIfSet) BEQ else BNE)) & MatchParameter(1)
-    val elseLabel = Elidable & HasOpcode(LABEL) & MatchParameter(0)
-    val afterLabel = Elidable & HasOpcode(LABEL) & MatchParameter(1) & DoesntMatterWhatItDoesWith(State.C, State.N, State.V, State.Z)
+    val elseLabel = (Elidable & HasOpcode(LABEL) & MatchParameter(0) & IsNotALabelUsedManyTimes).capture(10)
+    val afterLabel = Elidable & HasOpcode(LABEL) & MatchParameter(1) & DoesntMatterWhatItDoesWith(State.C, State.N, State.V, State.Z) & IsNotALabelUsedManyTimes
     val store = Elidable & (Not(ReadsC) & Linear | HasOpcodeIn(RTS, JSR, RTI, RTL, BSR))
     val secondReturn = (Elidable & (HasOpcodeIn(RTS, RTI) | NoopDiscardsFlags)).*.capture(6)
     val where = Where { ctx =>
@@ -1851,13 +1865,30 @@ object AlwaysGoodOptimizations {
       if (firstSet) test ~ ifSet ~ store.*.capture(4) ~ jump ~ elseLabel ~ ifClear ~ store.*.capture(5) ~ afterLabel ~ secondReturn ~ where
       else test ~ ifClear ~ store.*.capture(4) ~ jump ~ elseLabel ~ ifSet ~ store.*.capture(5) ~ afterLabel ~ secondReturn ~ where
     pattern ~~> { (_, ctx) =>
+      val elseLabelUseCount = ctx.get[Constant](0) match {
+        case MemoryAddressConstant(Label(label)) => ctx.labelUseCount(label)
+        case _ => 9999
+      }
       List(
         AssemblyLine.immediate(LDA, 0),
         AssemblyLine.implied(if (shift >= 4) ROR else ROL)) ++
         (if (shift >= 4) List.fill(7 - shift)(AssemblyLine.implied(LSR)) else List.fill(shift)(AssemblyLine.implied(ASL))) ++
         (if (zeroIfSet) List(AssemblyLine.immediate(EOR, nonZero)) else Nil) ++
         ctx.get[List[AssemblyLine]](5) ++
-        ctx.get[List[AssemblyLine]](6)
+        ctx.get[List[AssemblyLine]](6) ++ (
+          if (elseLabelUseCount == 1) Nil
+          else {
+            val storeAndSecondReturn = ctx.get[List[AssemblyLine]](5) ++ ctx.get[List[AssemblyLine]](6)
+            val set = Set(RTS, JSR, RTI, RTL, BSR)
+            if (storeAndSecondReturn.exists(p => set(p.opcode))) {
+              ctx.get[List[AssemblyLine]](10) ++ List(
+                AssemblyLine.immediate(LDA, if (firstSet) (if (zeroIfSet) nonZero else 0) else (if (zeroIfSet) 0 else nonZero))
+              ) ++ ctx.get[List[AssemblyLine]](5) ++ ctx.get[List[AssemblyLine]](6)
+            } else {
+              ctx.get[List[AssemblyLine]](10)
+            }
+          }
+        )
     }
   }
 
@@ -2043,7 +2074,7 @@ object AlwaysGoodOptimizations {
 
   val UnusedLabelRemoval = new RuleBasedAssemblyOptimization("Unused label removal",
     needsFlowInfo = FlowInfoRequirement.JustLabels,
-    (Elidable & HasOpcode(LABEL) & HasCallerCount(0)) ~~> (_ => Nil)
+    (Elidable & HasOpcode(LABEL) & HasCallerCount(0) & ParameterIsLocalLabel) ~~> (_ => Nil)
   )
 
   val OperationsAroundShifting = new RuleBasedAssemblyOptimization("Operations around shifting",
@@ -2960,7 +2991,9 @@ object AlwaysGoodOptimizations {
 
     (Elidable & HasOpcode(EOR) & MatchImmediate(0)) ~
       (Elidable & HasOpcode(CMP) & MatchImmediate(1) & DoesntMatterWhatItDoesWith(State.A, State.N, State.C)) ~~> { (code, ctx) =>
-      List(code.last.copy(parameter = CompoundConstant(MathOperator.Exor, ctx.get[Constant](0), ctx.get[Constant](1))))
+      val c0 = ctx.get[Constant](0)
+      val c1 = ctx.get[Constant](1)
+      List(code.last.copy(parameter = CompoundConstant(MathOperator.Exor, c0, c1).quickSimplify))
     },
 
     MultipleAssemblyRules(for {
@@ -3023,6 +3056,102 @@ object AlwaysGoodOptimizations {
       (Elidable & HasOpcode(LDA) & HasImmediate(0)) ~
       (Elidable & HasOpcode(LABEL) & MatchParameter(1) & IsNotALabelUsedManyTimes & DoesntMatterWhatItDoesWith(State.N, State.Z, State.C, State.V)) ~~> { code =>
       List(code(1).copy(opcode = LDA), code.head.copy(opcode = AND))
+    },
+
+    (Elidable & HasOpcode(CMP) & HasAddrMode(Immediate)) ~
+      (Elidable & HasOpcodeIn(BEQ, BNE) & MatchParameter(1)) ~
+      (Elidable & HasAddrMode(Implied) & HasOpcodeIn(INC, DEC) & DoesntMatterWhatItDoesWith(State.N, State.Z, State.C, State.V)) ~
+      (Elidable & HasOpcode(JMP) & HasAddrModeIn(Absolute, LongAbsolute)) ~
+      (Elidable & HasOpcode(LABEL) & MatchParameter(1) & DoesntMatterWhatItDoesWith(State.N, State.Z, State.C, State.V, State.A)) ~~> { code =>
+      val delta = code(2).opcode match {
+        case INC => +1
+        case DEC => -1
+      }
+      val branch = code(1).opcode match {
+        case BEQ => BNE
+        case BNE => BEQ
+      }
+      List(
+        code(2),
+        code.head.copy(parameter = (code.head.parameter + delta).quickSimplify),
+        code(1).copy(opcode = branch, parameter = code(3).parameter),
+        code(4))
+    },
+
+    (Elidable & HasOpcode(CPX) & HasAddrMode(Immediate)) ~
+      (Elidable & HasOpcodeIn(BEQ, BNE) & MatchParameter(1)) ~
+      (Elidable & HasAddrMode(Implied) & HasOpcodeIn(INX, DEX) & DoesntMatterWhatItDoesWith(State.N, State.Z, State.C, State.V)) ~
+      (Elidable & HasOpcode(JMP) & HasAddrModeIn(Absolute, LongAbsolute)) ~
+      (Elidable & HasOpcode(LABEL) & MatchParameter(1) & DoesntMatterWhatItDoesWith(State.N, State.Z, State.C, State.V, State.X)) ~~> { code =>
+      val delta = code(2).opcode match {
+        case INX => +1
+        case DEX => -1
+      }
+      val branch = code(1).opcode match {
+        case BEQ => BNE
+        case BNE => BEQ
+      }
+      List(
+        code(2),
+        code.head.copy(parameter = (code.head.parameter + delta).quickSimplify),
+        code(1).copy(opcode = branch, parameter = code(3).parameter),
+        code(4))
+    },
+
+    (Elidable & HasOpcode(CPY) & HasAddrMode(Immediate)) ~
+      (Elidable & HasOpcodeIn(BEQ, BNE) & MatchParameter(1)) ~
+      (Elidable & HasAddrMode(Implied) & HasOpcodeIn(INY, DEY) & DoesntMatterWhatItDoesWith(State.N, State.Z, State.C, State.V)) ~
+      (Elidable & HasOpcode(JMP) & HasAddrModeIn(Absolute, LongAbsolute)) ~
+      (Elidable & HasOpcode(LABEL) & MatchParameter(1) & DoesntMatterWhatItDoesWith(State.N, State.Z, State.C, State.V, State.Y)) ~~> { code =>
+      val delta = code(2).opcode match {
+        case INY => +1
+        case DEY => -1
+      }
+      val branch = code(1).opcode match {
+        case BEQ => BNE
+        case BNE => BEQ
+      }
+      List(
+        code(2),
+        code.head.copy(parameter = (code.head.parameter + delta).quickSimplify),
+        code(1).copy(opcode = branch, parameter = code(3).parameter),
+        code(4))
+    },
+
+    (Elidable & HasOpcode(INC) & HasAddrMode(Implied)) ~
+    (Elidable & HasOpcode(CMP) & HasAddrMode(Immediate) & MatchParameter(1) & DoesntMatterWhatItDoesWith(State.N, State.A, State.C, State.V)) ~~> { (code, ctx) =>
+      val c1 = ctx.get[Constant](1)
+      List(code.last.copy(parameter = (c1 - 1).quickSimplify))
+    },
+
+    (Elidable & HasOpcode(INX) & HasAddrMode(Implied)) ~
+    (Elidable & HasOpcode(CPX) & HasAddrMode(Immediate) & MatchParameter(1) & DoesntMatterWhatItDoesWith(State.N, State.X, State.C, State.V)) ~~> { (code, ctx) =>
+      val c1 = ctx.get[Constant](1)
+      List(code.last.copy(parameter = (c1 - 1).quickSimplify))
+    },
+
+    (Elidable & HasOpcode(INY) & HasAddrMode(Implied)) ~
+    (Elidable & HasOpcode(CPY) & HasAddrMode(Immediate) & MatchParameter(1) & DoesntMatterWhatItDoesWith(State.N, State.Y, State.C, State.V)) ~~> { (code, ctx) =>
+      val c1 = ctx.get[Constant](1)
+      List(code.last.copy(parameter = (c1 - 1).quickSimplify))
+    },
+
+    (Elidable & HasOpcode(DEC) & HasAddrMode(Implied)) ~
+    (Elidable & HasOpcode(CMP) & HasAddrMode(Immediate) & MatchParameter(1) & DoesntMatterWhatItDoesWith(State.N, State.A, State.C, State.V)) ~~> { (code, ctx) =>
+      val c1 = ctx.get[Constant](1)
+      List(code.last.copy(parameter = (c1 + 1).quickSimplify))
+    },
+
+    (Elidable & HasOpcode(DEX) & HasAddrMode(Implied)) ~
+    (Elidable & HasOpcode(CPX) & HasAddrMode(Immediate) & MatchParameter(1) & DoesntMatterWhatItDoesWith(State.N, State.X, State.C, State.V)) ~~> { (code, ctx) =>
+      val c1 = ctx.get[Constant](1)
+      List(code.last.copy(parameter = (c1 + 1).quickSimplify))
+    },
+
+    (Elidable & HasOpcode(DEY) & HasAddrMode(Implied)) ~
+    (Elidable & HasOpcode(CPY) & HasAddrMode(Immediate) & MatchParameter(1) & DoesntMatterWhatItDoesWith(State.N, State.Y, State.C, State.V)) ~~> { (code, ctx) =>
+      val c1 = ctx.get[Constant](1)
+      List(code.last.copy(parameter = (c1 + 1).quickSimplify))
     },
   )
 
@@ -3166,6 +3295,44 @@ object AlwaysGoodOptimizations {
         
         )
       }).flatten)
+
+  )
+
+  lazy val ReuseIndex = new RuleBasedAssemblyOptimization("Reuse right index register",
+    needsFlowInfo = FlowInfoRequirement.NoRequirement,
+
+    (Elidable & HasOpcode(LDX) & MatchParameter(0) & HasAddrModeIn(Absolute, ZeroPage)) ~
+      (Elidable & Linear & Not(ConcernsY) &
+        (Not(ConcernsX) | HasOpcodeIn(LDA, STA, LDA_W, STA_W, ADC, ADC_W, SBC, SBC_W, ORA, ORA_W, AND, AND_W, EOR, EOR_W, CMP, CMP_W) & HasAddrMode(AbsoluteX))).*.capture(1) ~
+      ((Elidable & HasOpcode(LDY) & MatchParameter(0) & HasAddrModeIn(Absolute, ZeroPage))).capture(2) ~~> { (code, ctx) =>
+      code.head.copy(opcode = LDY) :: (ctx.get[List[AssemblyLine]](1).map(l => if (l.addrMode == AbsoluteX) l.copy(addrMode = AbsoluteY) else l) ++ ctx.get[List[AssemblyLine]](2))
+    },
+
+    (Elidable & HasOpcode(LDY) & MatchParameter(0) & HasAddrModeIn(Absolute, ZeroPage)) ~
+      (Elidable & Linear & Not(ConcernsX) &
+        (Not(ConcernsY) | HasOpcodeIn(LDA, STA, LDA_W, STA_W, ADC, ADC_W, SBC, SBC_W, ORA, ORA_W, AND, AND_W, EOR, EOR_W, CMP, CMP_W) & HasAddrMode(AbsoluteY))).*.capture(1) ~
+      ((Elidable & HasOpcode(LDX) & MatchParameter(0) & HasAddrModeIn(Absolute, ZeroPage))).capture(2) ~~> { (code, ctx) =>
+      code.head.copy(opcode = LDX) :: (ctx.get[List[AssemblyLine]](1).map(l => if (l.addrMode == AbsoluteY) l.copy(addrMode = AbsoluteX) else l) ++ ctx.get[List[AssemblyLine]](2))
+    },
+
+    (Elidable & HasOpcode(LDX) & MatchParameter(0) & HasAddrModeIn(Absolute, ZeroPage)) ~
+      (Elidable & Linear & Not(ConcernsY) &
+        (Not(ConcernsX) | HasOpcodeIn(LDA, STA, LDA_W, STA_W, ADC, ADC_W, SBC, SBC_W, ORA, ORA_W, AND, AND_W, EOR, EOR_W, CMP, CMP_W) & HasAddrMode(AbsoluteX))).*.capture(1) ~
+      ((HasOpcode(LDX) & Not(MatchParameter(0))) ~
+        (Linear & Not(ConcernsY)).* ~
+        (Elidable & HasOpcode(LDY) & MatchParameter(0) & HasAddrModeIn(Absolute, ZeroPage))).capture(2) ~~> { (code, ctx) =>
+      code.head.copy(opcode = LDY) :: (ctx.get[List[AssemblyLine]](1).map(l => if (l.addrMode == AbsoluteX) l.copy(addrMode = AbsoluteY) else l) ++ ctx.get[List[AssemblyLine]](2))
+    },
+
+    (Elidable & HasOpcode(LDY) & MatchParameter(0) & HasAddrModeIn(Absolute, ZeroPage)) ~
+      (Elidable & Linear & Not(ConcernsX) &
+        (Not(ConcernsY) | HasOpcodeIn(LDA, STA, LDA_W, STA_W, ADC, ADC_W, SBC, SBC_W, ORA, ORA_W, AND, AND_W, EOR, EOR_W, CMP, CMP_W) & HasAddrMode(AbsoluteY))).*.capture(1) ~
+      ((HasOpcode(LDY) & Not(MatchParameter(0))) ~
+        (Linear & Not(ConcernsY)).* ~
+        (Elidable & HasOpcode(LDX) & MatchParameter(0) & HasAddrModeIn(Absolute, ZeroPage))).capture(2) ~~> { (code, ctx) =>
+      code.head.copy(opcode = LDX) :: (ctx.get[List[AssemblyLine]](1).map(l => if (l.addrMode == AbsoluteY) l.copy(addrMode = AbsoluteX) else l) ++ ctx.get[List[AssemblyLine]](2))
+    },
+
 
   )
 }

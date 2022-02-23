@@ -23,7 +23,7 @@ object D88Output extends OutputPackager {
   ).map(_.toByte)
 
 
-  override def packageOutput(mem: CompiledMemory, bank: String): Array[Byte] = {
+  override def packageOutput(flc: FileLayoutCollector, mem: CompiledMemory, bank: String): Array[Byte] = {
     val b = mem.banks(bank)
     val start = b.start
     val header = new D88Header(mem.programName.take(16))
@@ -58,7 +58,10 @@ object D88Output extends OutputPackager {
     val sizeInPages = size.|(0xff).+(1).>>(8)
     addSector(bootloader(b.start, sizeInPages))
     for (page <- 0 until sizeInPages) {
-      addSector(b.output.slice(b.start + (page << 8), b.start + (page << 8) + 0x100))
+      val pageStart = b.start + (page << 8)
+      val pagePastEnd = pageStart + 0x100
+      b.markAsOutputted(pageStart, pagePastEnd)
+      addSector(b.output.slice(pageStart, pagePastEnd))
     }
     header.totalSize = trackOffset
     sectors.map(_.toArray).foldLeft(header.toArray ++ trackList.toArray)(_ ++ _)

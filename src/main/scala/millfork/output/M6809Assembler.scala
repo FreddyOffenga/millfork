@@ -1,10 +1,11 @@
 package millfork.output
 
 import millfork.assembly.SourceLine
-import millfork.{CompilationOptions, Platform}
+import millfork.assembly.m6809.opt.JumpFixing
+import millfork.{CompilationFlag, CompilationOptions, Platform}
 import millfork.assembly.m6809.{MOpcode, _}
 import millfork.compiler.m6809.M6809Compiler
-import millfork.env.{Environment, Label, MemoryAddressConstant, NormalFunction, NumericConstant}
+import millfork.env.{Environment, FunctionInMemory, Label, MemoryAddressConstant, NormalFunction, NumericConstant}
 import millfork.node.{M6809Register, NiceFunctionProperty, Position, Program}
 
 import scala.collection.mutable
@@ -19,13 +20,34 @@ class M6809Assembler(program: Program,
 
   override def deduplicate(options: CompilationOptions, compiledFunctions: mutable.Map[String, CompiledFunction[MLine]]): Unit = ()
 
-  override def injectLabels(labelMap: Map[String, (Int, Int)], code: List[MLine]): List[MLine] = code
+  override def injectLabels(labelMap: Map[String, (String, Int)], code: List[MLine]): List[MLine] = code
 
   override def quickSimplify(code: List[MLine]): List[MLine] = code
 
   override def gatherNiceFunctionProperties(options: CompilationOptions, niceFunctionProperties: mutable.Set[(NiceFunctionProperty, String)], function: NormalFunction, code: List[MLine]): Unit = ()
 
-  override def performFinalOptimizationPass(f: NormalFunction, actuallyOptimize: Boolean, options: CompilationOptions, code: List[MLine]): List[MLine] = code
+  override def gatherFunctionOptimizationHints(options: CompilationOptions, niceFunctionProperties: mutable.Set[(NiceFunctionProperty, String)], function: FunctionInMemory): Unit = {
+    import NiceFunctionProperty._
+    import millfork.node.M6809NiceFunctionProperty._
+    val functionName = function.name
+    if (function.optimizationHints("preserves_memory")) niceFunctionProperties += DoesntWriteMemory -> functionName
+    if (function.optimizationHints("idempotent")) niceFunctionProperties += Idempotent -> functionName
+    if (function.optimizationHints("preserves_a")) niceFunctionProperties += DoesntChangeA -> functionName
+    if (function.optimizationHints("preserves_b")) niceFunctionProperties += DoesntChangeB -> functionName
+    if (function.optimizationHints("preserves_d")) {
+      niceFunctionProperties += DoesntChangeA -> functionName
+      niceFunctionProperties += DoesntChangeB -> functionName
+    }
+    if (function.optimizationHints("preserves_x")) niceFunctionProperties += DoesntChangeX -> functionName
+    if (function.optimizationHints("preserves_y")) niceFunctionProperties += DoesntChangeY -> functionName
+    if (function.optimizationHints("preserves_u")) niceFunctionProperties += DoesntChangeU -> functionName
+    if (function.optimizationHints("preserves_dp")) niceFunctionProperties += DoesntChangeDP -> functionName
+    if (function.optimizationHints("preserves_c")) niceFunctionProperties += DoesntChangeCF -> functionName
+  }
+
+  override def performFinalOptimizationPass(f: NormalFunction, actuallyOptimize: Boolean, options: CompilationOptions, code: List[MLine]): List[MLine] = {
+    JumpFixing(f, code, options)
+  }
 
   private def registerCode(register: M6809Register.Value): Int = {
     import M6809Register._
@@ -64,7 +86,7 @@ class M6809Assembler(program: Program,
   }
 
   override def emitInstruction(bank: String, options: CompilationOptions, startIndex: Int, instr: MLine): Int = {
-    val position = instr.source.map(sl => Position(sl.moduleName, sl.line, 0, 0))
+    implicit val position = instr.source.map(sl => Position(sl.moduleName, sl.line, 0, 0))
     import millfork.assembly.m6809.MOpcode._
     var index: Int = startIndex
     if (MOpcode.PrefixedBy10(instr.opcode)) {
@@ -83,9 +105,12 @@ class M6809Assembler(program: Program,
       case MLine0(_, RawByte, _) => log.fatal("BYTE opcode failure")
       case MLine0(LABEL, NonExistent, MemoryAddressConstant(Label(labelName))) =>
         val bank0 = mem.banks(bank)
-        labelMap(labelName) = bank0.index -> index
+        labelMap(labelName) = bank -> index
         index
       case MLine0(op, NonExistent, _) if MOpcode.NoopDiscard(op) =>
+        index
+      case MLine0(CHANGED_MEM, NonExistent, MemoryAddressConstant(Label(l))) if l.contains("..brk") =>
+        breakpointSet += mem.banks(bank).index -> index
         index
       case MLine0(CHANGED_MEM, _, _) =>
         index
@@ -142,19 +167,20 @@ class M6809Assembler(program: Program,
         index + 3
       case MLine0(op, Absolute(true), param) if M6809Assembler.indexable.contains(op) =>
         writeByte(bank, index, M6809Assembler.standard(op) + 0x20)
+        writeByte(bank, index + 1, 0x9f)
         writeWord(bank, index + 2, param)
-        index + 3
+        index + 4
       case MLine0(op, Indexed(M6809Register.PC, indirect), param) if M6809Assembler.indexable.contains(op) =>
         ???
       case MLine0(op, Indexed(register, indirect), param) if M6809Assembler.indexable.contains(op) =>
         writeByte(bank, index, M6809Assembler.indexable(op) + 0x20)
         val ri = getRegByte(register, indirect)
         param match {
-          case NumericConstant(n, _) if !indirect && n >= -16 && n <= 15 =>
-            writeByte(bank, index + 1, ri + n.toInt.&(0x1f))
-            index + 2
           case NumericConstant(0, _) =>
             writeByte(bank, index + 1, 0x84 + ri)
+            index + 2
+          case NumericConstant(n, _) if !indirect && n >= -16 && n <= 15 =>
+            writeByte(bank, index + 1, ri + n.toInt.&(0x1f))
             index + 2
           case NumericConstant(n, _) if n >= -128 && n <= 127 =>
             writeByte(bank, index + 1, 0x88 + ri)
@@ -204,6 +230,10 @@ class M6809Assembler(program: Program,
         writeByte(bank, index, M6809Assembler.branches(op))
         writeByte(bank, index + 1, param - (index + 2))
         index + 2
+      case MLine0(BRA, LongRelative, param) =>
+        writeByte(bank, index, 0x16)
+        writeWord(bank, index + 1, param - (index + 3))
+        index + 3
       case MLine0(op, LongRelative, param) if M6809Assembler.branches.contains(op) =>
         writeByte(bank, index, 0x10)
         writeByte(bank, index + 1, M6809Assembler.branches(op))
@@ -291,7 +321,7 @@ object M6809Assembler {
   inab(CLR, 0x4f)
   inab(COM, 0x43)
   inab(DEC, 0x4a)
-  inab(INC, 0x48)
+  inab(INC, 0x4c)
   inab(LSR, 0x44)
   inab(NEG, 0x40)
   inab(ROL, 0x49)

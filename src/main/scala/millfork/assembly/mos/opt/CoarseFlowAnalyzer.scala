@@ -51,6 +51,7 @@ object CoarseFlowAnalyzer {
     val codeArray = code.toArray
 
     var changed = true
+    var tFlag = false
     while (changed) {
       changed = false
       var currentStatus: CpuStatus = functionStartStatus
@@ -66,9 +67,14 @@ object CoarseFlowAnalyzer {
         var staSpIsNow = false
         codeArray(i) match {
           case AssemblyLine0(LABEL, _, MemoryAddressConstant(Label(l))) =>
+            if (tFlag && optimizationContext.options.flag(CompilationFlag.BuggyCodeWarning)) {
+              // T flag should not be set at a label!
+              optimizationContext.log.warn("The SET instruction shouldn't occur before a label")
+            }
             val L = l
             currentStatus = codeArray.indices.flatMap(j => codeArray(j) match {
               case AssemblyLine0(_, _, MemoryAddressConstant(Label(L))) => Some(flagArray(j))
+              case AssemblyLine0(_, _, StructureConstant(_, List(_, MemoryAddressConstant(Label(L))))) => Some(flagArray(j))
               case _ => None
             }).fold(currentStatus)(_ ~ _)
 
@@ -121,8 +127,18 @@ object CoarseFlowAnalyzer {
               z = currentStatus.a.z(),
               src = SourceOfNZ.AX)
 
+          case AssemblyLine0(ADC | SBC | CMP, _, _) if tFlag =>
+            currentStatus = currentStatus.copy(z = AnyStatus, n = AnyStatus, v = AnyStatus, c = AnyStatus)
+          case AssemblyLine0(EOR | AND | ORA, _, _) if tFlag =>
+            currentStatus = currentStatus.copy(z = AnyStatus, n = AnyStatus, v = AnyStatus, c = AnyStatus)
+            // TODO: find a better documentation for the T flag
+
           case AssemblyLine0(op, Implied, _) if FlowAnalyzerForImplied.hasDefinition(op) =>
             currentStatus = FlowAnalyzerForImplied.get(op)(currentStatus)
+
+          case AssemblyLine0(op, Immediate, _) if OpcodeClasses.ShortBranching(op) =>
+            // don't even both optimizing functions with weird jumps, it's futile
+            return cache.put(code, List.fill[CpuStatus](code.length)(initialStatus))
 
           case AssemblyLine0(op, Immediate | WordImmediate, NumericConstant(nn, _)) if FlowAnalyzerForImmediate.hasDefinition(op) =>
             currentStatus = FlowAnalyzerForImmediate.get(op)(nn.toInt, currentStatus)
@@ -161,6 +177,13 @@ object CoarseFlowAnalyzer {
             if (OpcodeClasses.ChangesStack(opcode) || OpcodeClasses.ChangesS(opcode)) currentStatus = currentStatus.copy(eqSX = false)
         }
         staSpWasLast = staSpIsNow
+        if (tFlag && optimizationContext.options.flag(CompilationFlag.BuggyCodeWarning)) {
+          if (OpcodeClasses.ShortBranching(codeArray(i).opcode) || codeArray(i).opcode == JMP || codeArray(i).opcode == JSR) {
+            // T flag should not be set at a jump!
+            optimizationContext.log.warn("The SET instruction shouldn't occur before a jump")
+          }
+        }
+        tFlag = codeArray(i).opcode == SET
       }
 //                  flagArray.zip(codeArray).foreach{
 //                    case (fl, y) => if (y.isPrintable) println(f"$fl%-32s $y%-32s")

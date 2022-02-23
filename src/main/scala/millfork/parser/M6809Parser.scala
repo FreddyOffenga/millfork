@@ -3,7 +3,7 @@ package millfork.parser
 import java.util.Locale
 
 import fastparse.all._
-import millfork.CompilationOptions
+import millfork.{CompilationFlag, CompilationOptions}
 import millfork.assembly.Elidability
 import millfork.assembly.m6809.{AAccumulatorIndexed, Absolute, BAccumulatorIndexed, DAccumulatorIndexed, DirectPage, Immediate, Indexed, Inherent, InherentA, InherentB, LongRelative, MAddrMode, MLine, MOpcode, NonExistent, PostIncremented, PreDecremented, RegisterSet, Relative, TwoRegisters}
 import millfork.env.{ByM6809Register, ParamPassingConvention}
@@ -23,7 +23,7 @@ case class M6809Parser(filename: String,
 
   override def allowIntelHexAtomsInAssembly: Boolean = false
 
-  val appcSimple: P[ParamPassingConvention] = P(("a" | "b" | "d" | "x" | "y" | "u" | "s" | "dp") ~ !letterOrDigit).!.map {
+  override val appcRegister: P[ParamPassingConvention] = P(("a" | "b" | "d" | "x" | "y" | "u" | "s" | "dp") ~ !letterOrDigit).!.map {
     case "a" => ByM6809Register(M6809Register.A)
     case "b" => ByM6809Register(M6809Register.B)
     case "d" => ByM6809Register(M6809Register.D)
@@ -35,7 +35,7 @@ case class M6809Parser(filename: String,
   override val asmParamDefinition: P[ParameterDeclaration] = for {
     p <- position()
     typ <- identifier ~ SWS
-    appc <- appcSimple | appcComplex
+    appc <- appcRegister | appcComplex
   } yield ParameterDeclaration(typ, appc).pos(p)
 
   def fastAlignmentForArrays: MemoryAlignment = WithinPageAlignment
@@ -45,21 +45,26 @@ case class M6809Parser(filename: String,
   val asmOpcode: P[(MOpcode.Value, Option[MAddrMode])] =
     (position() ~ (letter.rep ~ ("2" | "3").?).! ).map { case (p, o) => MOpcode.lookup(o, Some(p), log) }
 
-  private def mapRegister(r: String): M6809Register.Value = r.toLowerCase(Locale.ROOT) match {
+  private def mapRegister(p: (Position, String)): M6809Register.Value = p._2.toLowerCase(Locale.ROOT) match {
     case "x" => M6809Register.X
     case "y" => M6809Register.Y
     case "s" => M6809Register.S
     case "u" => M6809Register.U
     case "a" => M6809Register.A
     case "b" => M6809Register.B
+    case "d" => M6809Register.D
     case "dp" => M6809Register.DP
     case "pc" => M6809Register.PC
     case "cc" => M6809Register.CC
+    case _ =>
+      log.error("Invalid register " + p._2, Some(p._1))
+      M6809Register.D
   }
 
-  val anyRegister: P[M6809Register.Value] = P(("x" | "X" | "y" | "Y" | "s" | "S" | "u" | "U" | "a" | "A" | "b" | "B" | "dp" | "DP" | "cc" | "CC").!).map(mapRegister)
+  // only used for TFR, EXG, PSHS, PULS, PSHU, PULU, so it is allowed to accept any register name in order to let parsing continue:
+  val anyRegister: P[M6809Register.Value] = P(position() ~ identifier.!).map(mapRegister)
 
-  val indexRegister: P[M6809Register.Value] = P(("x" | "X" | "y" | "Y" | "s" | "S" | "u" | "U" | "pc" | "PC").!).map(mapRegister)
+  val indexRegister: P[M6809Register.Value] = P(position() ~ ("x" | "X" | "y" | "Y" | "s" | "S" | "u" | "U" | "pc" | "PC").!).map(mapRegister)
 
   val asmIndexedAddrMode: P[MAddrMode] = {
     (position() ~ "," ~/ HWS ~/ "-".rep.! ~/ HWS ~/ indexRegister ~/ HWS ~/ "+".rep.!).map {
@@ -95,6 +100,7 @@ case class M6809Parser(filename: String,
       pos <- position()
       (a, e) <-
         ("#" ~/ HWS ~/ asmExpression).map(Immediate -> _) |
+        (">" ~/ HWS ~/ asmExpression).map(Absolute(false) -> _) |
         ("<" ~/ HWS ~/ asmExpression).map(DirectPage -> _) |
           ("[" ~/ AWS ~/ asmParameterNoIndirectOrImmediate ~/ AWS ~/ "]").map { case (a, e) => a.makeIndirect(pos) -> e } |
           asmParameterNoIndirectOrImmediate
@@ -109,7 +115,7 @@ case class M6809Parser(filename: String,
     for {
       _ <- !"}"
       elid <- elidable
-      position <- position()
+      position <- position("assembly statement")
       (op, addrModeOverride) <- asmOpcode
       (addrMode, param) <- op match {
         case TFR | EXG =>
@@ -121,7 +127,7 @@ case class M6809Parser(filename: String,
     } yield {
       val effAddrMode = (addrModeOverride, addrMode) match {
         case (Some(InherentA), Inherent) => InherentA
-        case (Some(InherentB), Inherent) => InherentA
+        case (Some(InherentB), Inherent) => InherentB
         case (Some(InherentA | InherentB), _) =>
           log.error("Inherent accumulator instructions cannot have parameters", Some(position))
           addrMode
@@ -132,12 +138,12 @@ case class M6809Parser(filename: String,
         case (None, Absolute(false)) if MOpcode.Branching(op) => Relative
         case (None, _) => addrMode
       }
-      M6809AssemblyStatement(op, effAddrMode, param, elid)
+      M6809AssemblyStatement(op, effAddrMode, param, elid).pos(position)
     }
   }
 
   // TODO: label and instruction in one line
-  val asmLabel: P[ExecutableStatement] = (identifier ~ HWS ~ ":" ~/ HWS).map(l => M6809AssemblyStatement(MOpcode.LABEL, NonExistent, VariableExpression(l), Elidability.Elidable))
+  val asmLabel: P[ExecutableStatement] = ((".".? ~ identifier).! ~ HWS ~ ":" ~/ AWS_asm).map(l => M6809AssemblyStatement(MOpcode.LABEL, NonExistent, VariableExpression(l), Elidability.Elidable))
 
   val asmMacro: P[ExecutableStatement] = ("+" ~/ HWS ~/ functionCall(false)).map(ExpressionStatement)
 
@@ -145,6 +151,7 @@ case class M6809Parser(filename: String,
 
 
   override def validateAsmFunctionBody(p: Position, flags: Set[String], name: String, statements: Option[List[Statement]]): Unit = {
+    if (!options.flag(CompilationFlag.BuggyCodeWarning)) return
     statements match {
       case Some(Nil) => log.warn("Assembly function `$name` is empty, did you mean RTS, RTI, JMP, BRA or LBRA?", Some(p))
       case Some(xs) =>
@@ -165,6 +172,7 @@ case class M6809Parser(filename: String,
             case M6809AssemblyStatement(MOpcode.RTI, _, _, _) => () // OK
             case M6809AssemblyStatement(MOpcode.JMP, _, _, _) => () // OK
             case M6809AssemblyStatement(MOpcode.BRA, _, _, _) => () // OK
+            case M6809AssemblyStatement(MOpcode.PULS, set:RegisterSet, _, _) if set.contains(M6809Register.PC) => () // OK
             case _ =>
               val validReturn = if (flags("interrupt")) "RTI" else "RTS"
               log.warn(s"Non-macro assembly function `$name` should end in " + validReturn, Some(p))

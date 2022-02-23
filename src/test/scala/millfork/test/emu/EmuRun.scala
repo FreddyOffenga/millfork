@@ -9,11 +9,12 @@ import com.loomcom.symon.{Bus, Cpu, CpuState}
 import fastparse.core.Parsed.{Failure, Success}
 import millfork.assembly.AssemblyOptimization
 import millfork.assembly.mos.AssemblyLine
+import millfork.assembly.mos.opt.VeryLateMosAssemblyOptimizations
 import millfork.compiler.{CompilationContext, LabelGenerator}
 import millfork.compiler.mos.MosCompiler
 import millfork.env.{Environment, InitializedArray, InitializedMemoryVariable, NormalFunction}
 import millfork.error.Logger
-import millfork.node.{Program, StandardCallGraph}
+import millfork.node.{ImportStatement, Program, StandardCallGraph}
 import millfork.node.opt.NodeOptimization
 import millfork.output.{MemoryBank, MosAssembler}
 import millfork.parser.{MosParser, PreprocessingResult, Preprocessor}
@@ -21,6 +22,7 @@ import millfork.{CompilationFlag, CompilationOptions, CpuFamily, JobContext}
 import org.scalatest.Matchers
 
 import scala.collection.JavaConverters._
+import scala.collection.mutable
 
 /**
   * @author Karol Stasiak
@@ -34,7 +36,7 @@ object EmuRun {
     val source = Files.readAllLines(Paths.get(filename), StandardCharsets.US_ASCII).asScala.mkString("\n")
     val options = CompilationOptions(EmuPlatform.get(millfork.Cpu.Mos), Map(
           CompilationFlag.LenientTextEncoding -> true
-        ), None, 4, Map(), JobContext(TestErrorReporting.log, new LabelGenerator))
+        ), None, 4, Map(), EmuPlatform.textCodecRepository, JobContext(TestErrorReporting.log, new LabelGenerator))
     val PreprocessingResult(preprocessedSource, features, _) = Preprocessor.preprocessForTest(options, source)
     TestErrorReporting.log.info(s"Parsing $filename")
     val parser = MosParser("", preprocessedSource, "", options, features)
@@ -50,8 +52,8 @@ object EmuRun {
     }
   }
 
-  private lazy val cachedZpregO:  Option[Program]= preload("include/zp_reg.mfk")
-  private lazy val cachedBcdO:  Option[Program] = preload("include/bcd_6502.mfk")
+  private lazy val cachedZpregO:  Option[Program]= preload("include/m6502/zp_reg.mfk")
+  private lazy val cachedBcdO:  Option[Program] = preload("include/m6502/bcd_6502.mfk")
   private lazy val cachedStdioO:  Option[Program] = preload("src/test/resources/include/dummy_stdio.mfk")
   def cachedZpreg: Program = synchronized { cachedZpregO.getOrElse(throw new IllegalStateException()) }
   def cachedStdio: Program = synchronized { cachedStdioO.getOrElse(throw new IllegalStateException()) }
@@ -146,18 +148,22 @@ class EmuRun(cpu: millfork.Cpu.Value, nodeOptimizations: List[NodeOptimization],
       CompilationFlag.OptimizeStdlib -> this.inline,
       CompilationFlag.InterproceduralOptimization -> true,
       CompilationFlag.CompactReturnDispatchParams -> true,
+      CompilationFlag.UseOptimizationHints -> true,
       CompilationFlag.SoftwareStack -> softwareStack,
       CompilationFlag.EmitCmosOpcodes -> millfork.Cpu.CmosCompatible.contains(platform.cpu),
+      CompilationFlag.EmitSC02Opcodes -> millfork.Cpu.CmosCompatible.contains(platform.cpu),
+      CompilationFlag.EmitRockwellOpcodes -> millfork.Cpu.CmosCompatible.contains(platform.cpu),
       CompilationFlag.EmitEmulation65816Opcodes -> (platform.cpu == millfork.Cpu.Sixteen),
       CompilationFlag.EmitNative65816Opcodes -> (platform.cpu == millfork.Cpu.Sixteen && native16),
       CompilationFlag.Emit65CE02Opcodes -> (platform.cpu == millfork.Cpu.CE02),
+      CompilationFlag.EmitWdcOpcodes -> (platform.cpu == millfork.Cpu.Wdc),
       CompilationFlag.EmitHudsonOpcodes -> (platform.cpu == millfork.Cpu.HuC6280),
       CompilationFlag.SubroutineExtraction -> optimizeForSize,
       CompilationFlag.OptimizeForSize -> optimizeForSize,
       CompilationFlag.OptimizeForSpeed -> blastProcessing,
       CompilationFlag.OptimizeForSonicSpeed -> blastProcessing
       //      CompilationFlag.CheckIndexOutOfBounds -> true,
-    ), None, 4, Map(), JobContext(log, new LabelGenerator))
+    ), None, 4, Map(), EmuPlatform.textCodecRepository, JobContext(log, new LabelGenerator))
     log.hasErrors = false
     log.verbosity = 999
     if (native16 && platform.cpu != millfork.Cpu.Sixteen) throw new IllegalStateException
@@ -179,15 +185,47 @@ class EmuRun(cpu: millfork.Cpu.Value, nodeOptimizations: List[NodeOptimization],
     parserF.toAst match {
       case Success(unoptimized, _) =>
         log.assertNoErrors("Parse failed")
-
         // prepare
+        val alreadyImported = mutable.Set[String]()
         val withLibraries = {
           var tmp = unoptimized
-          if(source.contains("import zp_reg"))
-            tmp += EmuRun.cachedZpreg
-          if(source.contains("import stdio"))
-            tmp += EmuRun.cachedStdio
-          if(!options.flag(CompilationFlag.DecimalMode) && (source.contains("+'") || source.contains("-'") || source.contains("<<'") || source.contains("*'")))
+          unoptimized.declarations.foreach {
+            case ImportStatement("zp_reg", Nil) =>
+              if (alreadyImported.add("zp_reg")) {
+                tmp += EmuRun.cachedZpreg
+              }
+            case ImportStatement("m6502/zp_reg", Nil) =>
+              if (alreadyImported.add("zp_reg")) {
+                tmp += EmuRun.cachedZpreg
+              }
+            case ImportStatement("stdio", Nil) =>
+              if (alreadyImported.add("stdio")) {
+                tmp += EmuRun.cachedStdio
+              }
+            case ImportStatement(name, params) =>
+              val fullName = if(params.isEmpty) name else name + params.mkString("<", ",", ">")
+              if (alreadyImported.add(fullName)) {
+                val source2 = Files.readAllLines(Paths.get(s"src/test/resources/include/$name.mfk"))
+                val PreprocessingResult(preprocessedSource2, _, _) = Preprocessor(options, name, source2.asScala.toList, params)
+                MosParser("", preprocessedSource2, "", options, features).toAst match {
+                  case Success(unoptimized2, _) =>
+                    tmp += unoptimized2
+                  case _ => ???
+                }
+              }
+            case _ =>
+          }
+          if(!options.flag(CompilationFlag.DecimalMode) && (
+            source.contains("+'") ||
+              source.contains("-'") ||
+              source.contains("<<'") ||
+              source.contains(">>'") ||
+              source.contains("*'") ||
+              source.contains("$+") ||
+              source.contains("$-") ||
+              source.contains("$<<") ||
+              source.contains("$>>") ||
+              source.contains("$*")))
             tmp += EmuRun.cachedBcd
           tmp
         }
@@ -218,11 +256,11 @@ class EmuRun(cpu: millfork.Cpu.Value, nodeOptimizations: List[NodeOptimization],
         val env2 = new Environment(None, "", CpuFamily.M6502, options)
         env2.collectDeclarations(program, options)
         val assembler = new MosAssembler(program, env2, platform)
-        val output = assembler.assemble(callGraph, assemblyOptimizations, options)
+        val output = assembler.assemble(callGraph, assemblyOptimizations, options, if (assemblyOptimizations.nonEmpty) VeryLateMosAssemblyOptimizations.All else VeryLateMosAssemblyOptimizations.None)
         println(";;; compiled: -----------------")
         output.asm.takeWhile(s => !(s.startsWith(".") && s.contains("= $"))).filterNot(_.contains("; DISCARD_")).foreach(println)
         println(";;; ---------------------------")
-        assembler.labelMap.foreach { case (l, (_, addr)) => println(f"$l%-15s $$$addr%04x") }
+        assembler.labelMap.foreach { case (l, (_, addr)) => println(f"$l%-15s $$$addr%04x${assembler.endLabelMap.get(l)match{case Some((c,e)) => f"-$$$e%04x  $c%s"; case _ => ""}}%s") }
 
         val optimizedSize = assembler.mem.banks("default").initialized.count(identity).toLong
         if (unoptimizedSize == optimizedSize) {
@@ -243,6 +281,12 @@ class EmuRun(cpu: millfork.Cpu.Value, nodeOptimizations: List[NodeOptimization],
             if (memoryBank.readable(i)) memoryBank.readable(i + 1) = true
           }
         }
+        if (source.contains("w&x")) {
+          for (i <- 0 until 0x10000) {
+            memoryBank.writeable(i) = true
+          }
+        }
+        (0x200 until 0x2000).takeWhile(memoryBank.occupied(_)).map(memoryBank.output).grouped(16).map(_.map(i => f"$i%02x").mkString(" ")).foreach(log.debug(_))
         val timings = platform.cpu match {
           case millfork.Cpu.Cmos =>
             runViaSymon(log, memoryBank, platform.codeAllocators("default").startAt, CpuBehavior.CMOS_6502)

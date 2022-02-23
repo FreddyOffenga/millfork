@@ -1,0 +1,28 @@
+import test_fibonacci
+import test_pstring
+import test_string
+#if ENCCONV_SUPPORTED
+import test_encconv
+#endif
+#if MILLFORK_VERSION >= 000317
+import test_template<ignored1, 1>
+import test_template<ignored1, 1>
+import test_template<ignored2, 2>
+#endif
+
+void main() {
+    ensure_mixedcase()
+
+    // readkey()
+    test_fibonacci()
+    test_string()
+    test_pstring()
+#if ENCCONV_SUPPORTED
+    test_encconv()
+#endif
+
+    new_line()
+    putstrz("Total failures: "z)
+    putword(failure_count)
+    while true {} // don't exit
+}

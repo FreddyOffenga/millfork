@@ -99,6 +99,18 @@ The compiler emits COM files.
 
 * `cpm_z80` – CP/M on Z80
 
+* `z1013` – Robotron Z1013. The compiler emits Z80 files.
+
+* `trs80m1cmd` – TRS-80 Model 1 running TRS-DOS. The compiler emits CMD files.
+
+* `trs80m3cmd` – TRS-80 Model 3 running TRS-DOS. The compiler emits CMD files.
+
+* `coco_rsdos` – Tandy Color Computer running RS-DOS. (very experimental)
+Read [the Color Computer programming guide](./coco-programming-guide.md) for more info.
+
+* `coco_crt` – 16K cartridge for Tandy Color Computer. (very experimental)
+Read [the Color Computer programming guide](./coco-programming-guide.md) for more info.
+
 * `dos_com` – a COM file for DOS on IBM PC. (very experimental)
 
 * `x16_experimental` – Commander X16; very experimental,

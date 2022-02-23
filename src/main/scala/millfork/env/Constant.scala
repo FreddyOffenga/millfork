@@ -1,7 +1,11 @@
 package millfork.env
 
+import millfork.CompilationOptions
 import millfork.DecimalUtils._
+import millfork.node.{ResolvedFieldDesc, SumExpression}
 import millfork.output.DivisibleAlignment
+
+import scala.collection.GenTraversableOnce
 
 object Constant {
   val Zero: Constant = NumericConstant(0, 1)
@@ -19,10 +23,12 @@ import millfork.node.Position
 
 sealed trait Constant {
 
+
   def toIntelString: String
 
   def isQuiteNegative: Boolean = false
   def isProvablyZero: Boolean = false
+  def isProvablyNonZero: Boolean = false
   def isProvably(value: Int): Boolean = false
   def isProvablyInRange(startInclusive: Int, endInclusive: Int): Boolean = false
   def isProvablyNonnegative: Boolean = false
@@ -65,7 +71,7 @@ sealed trait Constant {
   }
 
   def subbyte(index: Int): Constant = {
-    if (requiredSize <= index) Constant.Zero
+    if (requiredSize > 0 && requiredSize <= index) Constant.Zero
     else index match {
       case 0 => if (isProvablyDivisibleBy256) Constant.Zero else loByte
       case 1 => hiByte
@@ -77,27 +83,39 @@ sealed trait Constant {
 
   def subword(index: Int): Constant = {
     if (requiredSize <= index) Constant.Zero
+    else if (requiredSize == 2 && !this.isInstanceOf[StructureConstant]) this
     else {
       // TODO: check if ok
-      CompoundConstant(MathOperator.Or, CompoundConstant(MathOperator.Shl, subbyte(index + 1), NumericConstant(8, 1)), subbyte(index)).quickSimplify
+      CompoundConstant(MathOperator.Or, CompoundConstant(MathOperator.Shl, subbyte(index + 1), NumericConstant(8, 2)), subbyte(index)).quickSimplify
     }
   }
 
   def subwordReversed(index: Int): Constant = {
     if (requiredSize <= index) Constant.Zero
+    else if (requiredSize == 2 && !this.isInstanceOf[StructureConstant]) this
     else {
       // TODO: check if ok
-      CompoundConstant(MathOperator.Or, CompoundConstant(MathOperator.Shl, subbyte(index), NumericConstant(8, 1)), subbyte(index + 1)).quickSimplify
+      CompoundConstant(MathOperator.Or, CompoundConstant(MathOperator.Shl, subbyte(index), NumericConstant(8, 2)), subbyte(index + 1)).quickSimplify
     }
   }
 
-  def subconstant(offset: Int, length: Int): Constant = {
+  def subconstant(options: CompilationOptions, offset: Int, length: Int): Constant = {
     if (offset == 0 && length == requiredSize) {
       this
+    } else if (options.platform.isBigEndian && length == 1) {
+      // TODO: is this ok?
+      subbyteBe(offset, requiredSize)
     } else if (length == 1) {
       subbyte(offset)
     } else if (offset >= requiredSize) {
       Constant.Zero
+    } else if (options.platform.isBigEndian) {
+      // TODO: is this ok?
+      (0 until length).map { i =>
+        val index = i + offset
+        val shift = 8 * (length - i)
+        CompoundConstant(MathOperator.Shl, subbyteBe(index, requiredSize), NumericConstant(shift, 1)).quickSimplify
+      }.reduceLeft((l, r) => CompoundConstant(MathOperator.Or, l, r).quickSimplify).quickSimplify
     } else {
       ((length - 1) to 0 by (-1)).map { i =>
         val index = i + offset
@@ -114,24 +132,59 @@ sealed trait Constant {
 
   def refersTo(name: String): Boolean
 
+  def extractLabels: List[String]
+
   def fitsInto(typ: Type): Boolean = true // TODO
 
   def fitInto(typ: Type): Constant = {
     // TODO:
     typ.size match {
-      case 1 => loByte
-      case 2 => subword(0)
+      case 1 =>
+        loByte.quickSimplify match {
+          case NumericConstant(value, 1) =>
+            if (typ.isSigned) NumericConstant(value.toByte, 1)
+            else NumericConstant(value & 0xff, 1)
+          case CompoundConstant(MathOperator.Minus, NumericConstant(l, _), NumericConstant(r, _)) =>
+            val value = l - r
+            if (typ.isSigned) NumericConstant(value.toByte, 1)
+            else NumericConstant(value & 0xff, 1)
+          case b => b
+        }
+      case 2 =>
+        subword(0).quickSimplify match {
+          case NumericConstant(value, _) =>
+            if (typ.isSigned) NumericConstant(value.toShort, 2)
+            else NumericConstant(value & 0xffff, 2)
+          case CompoundConstant(MathOperator.Minus, NumericConstant(l, _), NumericConstant(r, _)) =>
+            val value = l - r
+            if (typ.isSigned) NumericConstant(value.toShort, 2)
+            else NumericConstant(value & 0xffff, 2)
+          case w => w
+        }
       case _ => this
     }
   }
 
+  def fitInto(sourceType: Type, targetType: Type): Constant = {
+    val fit0 = fitInto(sourceType)
+    if (sourceType.size >= targetType.size) fit0 else {
+      fit0 match {
+        case NumericConstant(n, _) => NumericConstant(n, targetType.size)
+        case _ => fit0
+      }
+    }
+  }
+
   final def succ: Constant = (this + 1).quickSimplify
+
+  def rootThingName: String
 }
 
 case class AssertByte(c: Constant) extends Constant {
   override def isQuiteNegative: Boolean = c.isQuiteNegative
   override def isProvablyGreaterOrEqualThan(other: Constant): Boolean = c.isProvablyGreaterOrEqualThan(other)
   override def isProvablyZero: Boolean = c.isProvablyZero
+  override def isProvablyNonZero: Boolean = c.isProvablyNonZero
   override def isProvably(i: Int): Boolean = c.isProvably(i)
   override def isProvablyNonnegative: Boolean = c.isProvablyNonnegative
   override def isProvablyNegative(asType: Type): Boolean = c.isProvablyNegative(asType)
@@ -148,6 +201,9 @@ case class AssertByte(c: Constant) extends Constant {
 
   override def fitsInto(typ: Type): Boolean = true
   override def toIntelString: String = c.toIntelString
+  override def rootThingName: String = c.rootThingName
+
+  override def extractLabels: List[String] = c.extractLabels
 }
 
 case class StructureConstant(typ: StructType, fields: List[Constant]) extends Constant {
@@ -167,28 +223,33 @@ case class StructureConstant(typ: StructType, fields: List[Constant]) extends Co
 
   override def subbyte(index: Int): Constant = {
     var offset = 0
-    for ((fv, (ft, _)) <- fields.zip(typ.mutableFieldsWithTypes)) {
+    for ((fv, ResolvedFieldDesc(ft, _, _, arrayIndexTypeAndSize)) <- fields.zip(typ.mutableFieldsWithTypes)) {
+      // TODO: handle array members?
       val fs = ft.size
       if (index < offset + fs) {
         val indexInField = index - offset
         return fv.subbyte(indexInField)
       }
-      offset += fs
+      offset += fs * arrayIndexTypeAndSize.fold(1)(_._2)
     }
     Constant.Zero
   }
   override def subbyteBe(index: Int, totalSize: Int): Constant = {
     var offset = 0
-    for ((fv, (ft, _)) <- fields.zip(typ.mutableFieldsWithTypes)) {
+    for ((fv, ResolvedFieldDesc(ft, _, _, arrayIndexTypeAndSize)) <- fields.zip(typ.mutableFieldsWithTypes)) {
+      // TODO: handle array members?
       val fs = ft.size
       if (index < offset + fs) {
         val indexInField = index - offset
         return fv.subbyteBe(indexInField, fs)
       }
-      offset += fs
+      offset += fs * arrayIndexTypeAndSize.fold(1)(_._2)
     }
     Constant.Zero
   }
+  override def rootThingName: String = "?"
+
+  override def extractLabels: List[String] = this.fields.flatMap(_.extractLabels)
 }
 
 case class UnexpandedConstant(name: String, requiredSize: Int) extends Constant {
@@ -199,12 +260,16 @@ case class UnexpandedConstant(name: String, requiredSize: Int) extends Constant 
   override def toIntelString: String = name
 
   override def refersTo(name: String): Boolean = name == this.name
+
+  override def rootThingName: String = "?"
+
+  override def extractLabels: List[String] = Nil
 }
 
 case class NumericConstant(value: Long, requiredSize: Int) extends Constant {
   if (requiredSize == 1) {
     if (value < -128 || value > 255) {
-      throw new IllegalArgumentException(s"The constant $value is too big")
+      throw ConstantOverflowException(value, requiredSize)
     }
   }
   override def isQuiteNegative: Boolean = value < 0
@@ -214,6 +279,7 @@ case class NumericConstant(value: Long, requiredSize: Int) extends Constant {
   })
   override def isProvablyInRange(startInclusive: Int, endInclusive: Int): Boolean = value >= startInclusive && value <= endInclusive
   override def isProvablyZero: Boolean = value == 0
+  override def isProvablyNonZero: Boolean = value.&(0x1L.<<(8 * requiredSize - 1)) != 0
   override def isProvably(i: Int): Boolean = value == i
   override def isProvablyNonnegative: Boolean = value >= 0
   override def isProvablyNegative(asType: Type): Boolean = {
@@ -281,6 +347,10 @@ case class NumericConstant(value: Long, requiredSize: Int) extends Constant {
       NumericConstant(actualBits, typ.size)
     }
   }
+
+  override def rootThingName: String = ""
+
+  override def extractLabels: List[String] = Nil
 }
 
 case class MemoryAddressConstant(var thing: ThingInMemory) extends Constant {
@@ -319,6 +389,13 @@ case class MemoryAddressConstant(var thing: ThingInMemory) extends Constant {
   override def isRelatedTo(v: Thing): Boolean = thing.name == v.name
 
   override def refersTo(name: String): Boolean = name == thing.name
+
+  override def rootThingName: String = thing.rootName
+
+  override def extractLabels: List[String] = thing match {
+    case Label(n) => List(n)
+    case _ => Nil
+  }
 }
 
 case class SubbyteConstant(base: Constant, index: Int) extends Constant {
@@ -357,11 +434,17 @@ case class SubbyteConstant(base: Constant, index: Int) extends Constant {
   override def isRelatedTo(v: Thing): Boolean = base.isRelatedTo(v)
 
   override def refersTo(name: String): Boolean = base.refersTo(name)
+
+  override def rootThingName: String = base.rootThingName
+
+  override def extractLabels: List[String] = base.extractLabels
 }
 
 object MathOperator extends Enumeration {
   val Plus, Minus, Times, Shl, Shr, Shl9, Shr9, Plus9, DecimalPlus9,
   DecimalPlus, DecimalMinus, DecimalTimes, DecimalShl, DecimalShl9, DecimalShr,
+  Equal, NotEqual, Less, LessEqual, Greater, GreaterEqual,
+  Minimum, Maximum,
   Divide, Modulo,
   And, Or, Exor = Value
 }
@@ -404,6 +487,7 @@ case class CompoundConstant(operator: MathOperator.Value, lhs: Constant, rhs: Co
     val r = rhs.quickSimplify
     (l, r) match {
       case (MemoryAddressConstant(lt), MemoryAddressConstant(rt)) if operator == MathOperator.Minus && lt == rt => Constant.Zero
+      case (CompoundConstant(MathOperator.Plus, MemoryAddressConstant(lt), c), MemoryAddressConstant(rt)) if operator == MathOperator.Minus && lt == rt => c
       case (CompoundConstant(MathOperator.Plus, a, ll@NumericConstant(lv, _)), rr@NumericConstant(rv, _)) if operator == MathOperator.Plus =>
         CompoundConstant(MathOperator.Plus, a, ll + rr).quickSimplify
       case (CompoundConstant(MathOperator.Minus, a, ll@NumericConstant(lv, _)), rr@NumericConstant(rv, _)) if operator == MathOperator.Minus =>
@@ -442,7 +526,10 @@ case class CompoundConstant(operator: MathOperator.Value, lhs: Constant, rhs: Co
           case MathOperator.Plus9 => c
           case MathOperator.DecimalPlus => c
           case MathOperator.DecimalPlus9 => c
-          case MathOperator.Minus => CompoundConstant(operator, l, r)
+          case MathOperator.Minus => c match {
+            case NumericConstant(rv, rs) => NumericConstant(-rv, rs)
+            case _ => CompoundConstant(operator, l, r)
+          }
           case MathOperator.Times => Constant.Zero
           case MathOperator.Shl => Constant.Zero
           case MathOperator.Shr => Constant.Zero
@@ -453,12 +540,13 @@ case class CompoundConstant(operator: MathOperator.Value, lhs: Constant, rhs: Co
           case MathOperator.And => Constant.Zero
           case MathOperator.Divide => Constant.Zero
           case MathOperator.Modulo => Constant.Zero
-          case _ => CompoundConstant(operator, l, r)
+          case _ => quickSimplify2(l, r)
         }
       case (NumericConstant(0, _), c) =>
         operator match {
           case MathOperator.Shl => l
-          case _ => CompoundConstant(operator, l, r)
+          case MathOperator.Times => l
+          case _ => quickSimplify2(l, r)
         }
       case (c, NumericConstant(0, 1)) =>
         operator match {
@@ -476,56 +564,66 @@ case class CompoundConstant(operator: MathOperator.Value, lhs: Constant, rhs: Co
           case MathOperator.Exor => c
           case MathOperator.Or => c
           case MathOperator.And => Constant.Zero
-          case _ => CompoundConstant(operator, l, r)
+          case _ => quickSimplify2(l, r)
         }
       case (c, NumericConstant(1, 1)) =>
         operator match {
           case MathOperator.Times => c
-          case _ => CompoundConstant(operator, l, r)
+          case MathOperator.Divide => c
+          case MathOperator.Modulo => Constant.Zero
+          case _ => quickSimplify2(l, r)
         }
       case (NumericConstant(1, 1), c) =>
         operator match {
           case MathOperator.Times => c
-          case _ => CompoundConstant(operator, l, r)
+          case _ => quickSimplify2(l, r)
         }
-      case (NumericConstant(lv, ls), NumericConstant(rv, rs)) =>
-        var size = ls max rs
-        val bitmask = (1L << (8*size)) - 1
-        val value = operator match {
-          case MathOperator.Plus => lv + rv
-          case MathOperator.Minus => lv - rv
-          case MathOperator.Times => lv * rv
-          case MathOperator.Shl => lv << rv
-          case MathOperator.Shr => lv >> rv
-          case MathOperator.Shl9 => (lv << rv) & 0x1ff
-          case MathOperator.Plus9 => (lv + rv) & 0x1ff
-          case MathOperator.Shr9 => (lv & 0x1ff) >> rv
-          case MathOperator.Exor => (lv ^ rv) & bitmask
-          case MathOperator.Or => lv | rv
-          case MathOperator.And => lv & rv & bitmask
-          case MathOperator.Divide if lv >= 0 && rv >= 0 => lv / rv
-          case MathOperator.Modulo if lv >= 0 && rv >= 0 => lv % rv
-          case MathOperator.DecimalPlus if ls == 1 && rs == 1 =>
-            asDecimal(lv & 0xff, rv & 0xff, _ + _) & 0xff
-          case MathOperator.DecimalMinus if ls == 1 && rs == 1 && lv.&(0xff) >= rv.&(0xff) =>
-            asDecimal(lv & 0xff, rv & 0xff, _ - _) & 0xff
-          case _ => return this
-        }
-        operator match {
-          case MathOperator.Plus9 | MathOperator.DecimalPlus9 | MathOperator.Shl9 | MathOperator.DecimalShl9 =>
-            size = 2
-          case MathOperator.Times | MathOperator.Shl =>
-            val mask = (1 << (size * 8)) - 1
-            if (value != (value & mask)) {
-              size = ls + rs
-            }
-          case _ =>
-        }
-        NumericConstant(value, size)
-      case _ => CompoundConstant(operator, l, r)
+      case _ => quickSimplify2(l, r)
     }
   }
 
+  private def quickSimplify2(l: Constant, r: Constant): Constant = (l, r) match {
+    case (NumericConstant(lv, ls), NumericConstant(rv, rs)) =>
+      var size = ls max rs
+      val bitmask = (1L << (8*size)) - 1
+      val value = operator match {
+        case MathOperator.Minimum => lv min rv
+        case MathOperator.Maximum => lv max rv
+        case MathOperator.Plus => lv + rv
+        case MathOperator.Minus =>
+          val tmp = lv - rv
+          if (size == 1 && (tmp < -128 || tmp > 255) ) return l.quickSimplify - r.quickSimplify
+          tmp
+        case MathOperator.Times => lv * rv
+        case MathOperator.Shl => lv << rv
+        case MathOperator.Shr => lv >> rv
+        case MathOperator.Shl9 => (lv << rv) & 0x1ff
+        case MathOperator.Plus9 => (lv + rv) & 0x1ff
+        case MathOperator.Shr9 => (lv & 0x1ff) >> rv
+        case MathOperator.Exor => (lv ^ rv) & bitmask
+        case MathOperator.Or => lv | rv
+        case MathOperator.And => lv & rv & bitmask
+        case MathOperator.Divide if lv >= 0 && rv > 0 => lv / rv
+        case MathOperator.Modulo if lv >= 0 && rv >= 0 => lv % rv
+        case MathOperator.DecimalPlus if ls == 1 && rs == 1 =>
+          asDecimal(lv & 0xff, rv & 0xff, _ + _) & 0xff
+        case MathOperator.DecimalMinus if ls == 1 && rs == 1 && lv.&(0xff) >= rv.&(0xff) =>
+          asDecimal(lv & 0xff, rv & 0xff, _ - _) & 0xff
+        case _ => return this
+      }
+      operator match {
+        case MathOperator.Plus9 | MathOperator.DecimalPlus9 | MathOperator.Shl9 | MathOperator.DecimalShl9 =>
+          size = 2
+        case MathOperator.Times | MathOperator.Shl =>
+          val mask = (1 << (size * 8)) - 1
+          if (value != (value & mask)) {
+            size = ls + rs
+          }
+        case _ =>
+      }
+      NumericConstant(value, size)
+    case _ => CompoundConstant(operator, l, r)
+  }
 
   import MathOperator._
 
@@ -598,6 +696,12 @@ case class CompoundConstant(operator: MathOperator.Value, lhs: Constant, rhs: Co
       case Exor => s"$plhs ^ $prhs"
       case Divide => s"$plhs / $prhs"
       case Modulo => s"$plhs %% $prhs"
+      case Equal => s"$plhs == $prhs"
+      case NotEqual => s"$plhs != $prhs"
+      case Greater => s"$plhs > $prhs"
+      case GreaterEqual => s"$plhs >= $prhs"
+      case Less=> s"$plhs < $prhs"
+      case LessEqual=> s"$plhs <= $prhs"
     }
   }
 
@@ -678,4 +782,31 @@ case class CompoundConstant(operator: MathOperator.Value, lhs: Constant, rhs: Co
     }
     result
   }
+
+  override def rootThingName: String = (lhs.rootThingName, rhs.rootThingName) match {
+    case ("?", _) => "?"
+    case (_, "?") => "?"
+    case ("", x) => x
+    case (x, "") => x
+    case _ => "?"
+  }
+
+  override def extractLabels: List[String] = lhs.extractLabels ++ rhs.extractLabels
+}
+
+case class IfConstant(cond: Constant, ifTrue: Constant, ifFalse: Constant) extends Constant {
+
+  override def toIntelString: String = s"if(${cond.toIntelString},${ifTrue.toIntelString},${ifFalse.toIntelString})"
+
+  override def toString: String = s"if(${cond.toString},${ifTrue.toString},${ifFalse.toString})"
+
+  override def requiredSize: Int = ifTrue.requiredSize max ifFalse.requiredSize
+
+  override def isRelatedTo(v: Thing): Boolean = cond.isRelatedTo(v) || ifTrue.isRelatedTo(v) || ifFalse.isRelatedTo(v)
+
+  override def refersTo(name: String): Boolean = cond.refersTo(name) || ifTrue.refersTo(name) || ifFalse.refersTo(name)
+
+  override def extractLabels: List[String] = cond.extractLabels ++ ifTrue.extractLabels ++ ifFalse.extractLabels
+
+  override def rootThingName: String = "?"
 }

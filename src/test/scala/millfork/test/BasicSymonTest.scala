@@ -147,9 +147,13 @@ class BasicSymonTest extends FunSuite with Matchers {
   test("Segment syntax") {
     EmuUnoptimizedCrossPlatformRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
-        | segment(default)byte output @$c000
+        | segment ( default ) byte output @$c000
         | segment(default)array x[3]
         | segment(default)void main () {
+        | }
+        | segment (default) {
+        |  const byte a = 1
+        |  //
         | }
       """.stripMargin){ m => () }
   }
@@ -184,6 +188,21 @@ class BasicSymonTest extends FunSuite with Matchers {
         | }
       """.stripMargin){ m =>
       m.readWord(0xc000) should equal(0x255)
+    }
+  }
+
+  test("Allocation test 2") {
+    EmuUnoptimizedCrossPlatformRun(Cpu.Mos)(
+      """
+        | #use ZPREG_SIZE
+        | array _crap[$100-ZPREG_SIZE] @$00
+        | word output @$c000
+        | word data
+        | void main () {
+        |   output = data.addr
+        | }
+      """.stripMargin){ m =>
+      m.readWord(0xc000) should be >=(0x100)
     }
   }
 
@@ -291,4 +310,46 @@ class BasicSymonTest extends FunSuite with Matchers {
         | }
         |""".stripMargin){_=>}
   }
+
+  test("Lookup") {
+    EmuUnoptimizedRun(
+      """
+        |noinline byte f() = 1
+        |void g() @$5 extern
+        |alias h = f
+        |alias i = g
+        |
+        |void main() {
+        | if f() != 1 {
+        |   g()
+        |   h()
+        |   i()
+        | }
+        |}
+        |""".stripMargin)
+  }
+
+  test("Numeric literals") {
+    EmuUnoptimizedRun(
+      """
+        |#if 1_1 == 0x_0_b
+        |#endif
+        |array a @$c000 = [
+        | %0,  %1,  %001,  %000001,  %11100,
+        |0b0, 0b1, 0b001, 0b000001, 0b11100, 0b___00_1,
+        |0q12, 0q1, 0q0, 0q1230, 0q_00_1,
+        |0o001, 0o0, 0o6, 0o52, 0o_00_1,
+        |0x23, 0xdd, 0x55, 0x0, 0x1, 0xf,
+        | $23,  $dd,  $55,  $0,  $1,  $f, $___1,
+        | 0x1_1, 0x_1___1,
+        |000, 0_0, 0, 1
+        |]
+        |
+        |void main() {
+        |  a[0] = a[0]
+        |}
+        |""".stripMargin)
+  }
+
+
 }

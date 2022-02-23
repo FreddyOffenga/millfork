@@ -7,7 +7,7 @@ import java.util.Locale
 
 import millfork.error.Logger
 import millfork.output._
-import millfork.parser.TextCodec
+import millfork.parser.{TextCodec, TextCodecRepository, TextCodecWithFlags}
 import org.apache.commons.configuration2.INIConfiguration
 
 /**
@@ -25,7 +25,8 @@ class Platform(
                 val defaultCodec: TextCodec,
                 val screenCodec: TextCodec,
                 val features: Map[String, Long],
-                val outputPackager: OutputPackager,
+                val outputPackagers: Map[String, OutputPackager],
+                val defaultOutputPackager: OutputPackager,
                 val codeAllocators: Map[String, UpwardByteAllocator],
                 val variableAllocators: Map[String, VariableAllocator],
                 val zpRegisterSize: Int,
@@ -41,27 +42,58 @@ class Platform(
                 val outputLabelsFormat: DebugOutputFormat,
                 val outputStyle: OutputStyle.Value
               ) {
+
   def hasZeroPage: Boolean = cpuFamily == CpuFamily.M6502
 
   def cpuFamily: CpuFamily.Value = CpuFamily.forType(this.cpu)
 
   def isBigEndian: Boolean = CpuFamily.isBigEndian(cpuFamily)
+
+  private def bankStart(bank: String): Int = codeAllocators(bank).startAt min variableAllocators(bank).startAt
+
+  private def bankEndBefore(bank: String): Int = codeAllocators(bank).endBefore max variableAllocators(bank).endBefore
+
+  def isUnsafeToJump(bank1: String, bank2: String): Boolean = {
+    if (bank1 == bank2) return false
+    val s1 = bankStart(bank1)
+    val s2 = bankStart(bank2)
+    val e1 = bankEndBefore(bank1)
+    val e2 = bankEndBefore(bank2)
+    e2 > s1 && s2 < e1
+  }
+
+  lazy val banksExplicitlyWrittenToOutput: Set[String] = bankNumbers.keySet.filter(b => defaultOutputPackager.writes(b)).toSet
+
+  def getMesenLabelCategory(bank: String, address: Int): Char = {
+    // see: https://www.mesen.ca/docs/debugging/debuggerintegration.html#mesen-label-files-mlb
+    val start = bankStart(bank)
+    val end = bankEndBefore(bank)
+    if (start > address || address >= end) 'G'
+    else if (banksExplicitlyWrittenToOutput(bank)) 'P'
+    else if (bank == "default") 'R'
+    else 'W' // TODO: distinguish between W and S
+  }
 }
 
 object Platform {
 
-  def lookupPlatformFile(includePath: List[String], platformName: String)(implicit log: Logger): Platform = {
+  def lookupPlatformFile(includePath: List[String], platformName: String, textCodecRepository: TextCodecRepository)(implicit log: Logger): Platform = {
     includePath.foreach { dir =>
       val file = Paths.get(dir, platformName + ".ini").toFile
       log.debug("Checking " + file)
       if (file.exists()) {
-        return load(file)
+        return load(file, textCodecRepository)
+      }
+      val file2 = Paths.get(dir, "platform", platformName + ".ini").toFile
+      log.debug("Checking " + file2)
+      if (file2.exists()) {
+        return load(file2, textCodecRepository)
       }
     }
-    log.fatal(s"Platfom definition `$platformName` not found", None)
+    log.fatal(s"Platform definition `$platformName` not found", None)
   }
 
-  def load(file: File)(implicit log: Logger): Platform = {
+  def load(file: File, textCodecRepository: TextCodecRepository)(implicit log: Logger): Platform = {
     val conf = new INIConfiguration()
     val bytes = Files.readAllBytes(file.toPath)
     conf.read(new StringReader(new String(bytes, StandardCharsets.UTF_8)))
@@ -112,16 +144,22 @@ object Platform {
 
     val codecName = cs.get(classOf[String], "encoding", "ascii")
     val srcCodecName = cs.get(classOf[String], "screen_encoding", codecName)
-    val (codec, czt) = TextCodec.forName(codecName, None, log)
+    val TextCodecWithFlags(codec, czt, clp, _) = textCodecRepository.forName(codecName, None, log)
     if (czt) {
       log.error("Default encoding cannot be zero-terminated")
+    }
+    if (clp) {
+      log.error("Default encoding cannot be length-prefixed")
     }
     if (codec.stringTerminator.length != 1) {
       log.warn("Default encoding should be byte-based")
     }
-    val (srcCodec, szt) = TextCodec.forName(srcCodecName, None, log)
+    val TextCodecWithFlags(srcCodec, szt, slp, _) = textCodecRepository.forName(srcCodecName, None, log)
     if (szt) {
       log.error("Default screen encoding cannot be zero-terminated")
+    }
+    if (slp) {
+      log.error("Default screen encoding cannot be length-prefixed")
     }
 
     val as = conf.getSection("allocation")
@@ -234,12 +272,14 @@ object Platform {
       }))
 
     val os = conf.getSection("output")
-    val outputPackager = SequenceOutput(os.get(classOf[String], "format", "").split("[, \n\t\r]+").filter(_.nonEmpty).map {
+    def parseOutputPackager(s: String): OutputPackager = SequenceOutput(s.split("[, \n\t\r]+").filter(_.nonEmpty).map {
       case "startaddr" => StartAddressOutput(0)
       case "startaddr_be" => StartAddressOutputBe(0)
       case "startpage" => StartPageOutput
       case "endaddr" => EndAddressOutput(0)
       case "endaddr_be" => EndAddressOutputBe(0)
+      case l if l.startsWith("\"") && l.endsWith("\"") => StringOutput(l.substring(1, l.length - 1))
+      case l if l.startsWith("programname-") => ProgramNameOutput(parseNumber(l.stripPrefix("programname-")))
       case l if l.startsWith("startaddr+") => StartAddressOutput(parseNumber(l.stripPrefix("startaddr+")))
       case l if l.startsWith("startaddr-") => StartAddressOutput(-parseNumber(l.stripPrefix("startaddr-")))
       case l if l.startsWith("startaddr_be+") => StartAddressOutputBe(parseNumber(l.stripPrefix("startaddr_be+")))
@@ -258,14 +298,40 @@ object Platform {
       case l if l.startsWith("length_be-") => AllocatedDataLengthBe(-parseNumber(l.stripPrefix("length_be-")))
       case "length_be" => AllocatedDataLengthBe(0)
       case "d88" => D88Output
-      case "tap" => TapOutput
+      case "tap" => new TapOutput("main")
+      case l if l.startsWith("tap:") => new TapOutput(l.stripPrefix("tap:").trim)
+      case "trscmd" => new TrsCmdOutput("main")
+      case l if l.startsWith("trscmd:") => new TrsCmdOutput(l.stripPrefix("trscmd:").trim)
       case n => n.split(":").filter(_.nonEmpty) match {
         case Array(b, s, e) => BankFragmentOutput(b, parseNumber(s), parseNumber(e))
-        case Array(s, e) => CurrentBankFragmentOutput(parseNumber(s), parseNumber(e))
-        case Array(b) => ConstOutput(parseNumber(b).toByte)
+        case Array(s, e) =>
+          s match {
+            case "addr" =>
+              val (symbol, bonus) = parseSymbolAndBonus(e)
+              SymbolAddressOutput(symbol, bonus)
+            case "addr_be" =>
+              val (symbol, bonus) = parseSymbolAndBonus(e)
+              SymbolAddressOutputBe(symbol, bonus)
+            case _ =>
+              CurrentBankFragmentOutput(parseNumber(s), parseNumber(e))
+          }
+        case Array(b) => try {
+          ConstOutput(parseNumber(b).toByte)
+        } catch {
+          case _:NumberFormatException => log.fatal(s"Invalid output format: `$b`")
+        }
         case x => log.fatal(s"Invalid output format: `$x`")
       }
     }.toList)
+    val outputPackagers = banks.flatMap{ b =>
+      val f = os.get(classOf[String], "format_segment_" + b, null)
+      if (f eq null) {
+        None
+      } else {
+        Some(b -> parseOutputPackager(f))
+      }
+    }.toMap
+    val defaultOutputPackager = parseOutputPackager(os.get(classOf[String], "format", ""))
     val fileExtension = os.get(classOf[String], "extension", ".bin")
     val generateBbcMicroInfFile = os.get(classOf[Boolean], "bbc_inf", false)
     val generateGameBoyChecksums = os.get(classOf[Boolean], "gb_checksum", false)
@@ -275,13 +341,31 @@ object Platform {
       case "lunix" => OutputStyle.LUnix
       case x => log.fatal(s"Invalid output style: `$x`")
     }
+    if (outputStyle != OutputStyle.PerBank && outputPackagers.nonEmpty) {
+      log.error("Different output formats per segment are allowed only if style=per_segment")
+    }
     val debugOutputFormatName = os.get(classOf[String], "labels", "vice")
     val debugOutputFormat = DebugOutputFormat.map.getOrElse(
       debugOutputFormatName.toLowerCase(Locale.ROOT),
       log.fatal(s"Invalid label file format: `$debugOutputFormatName`"))
 
     val builtInFeatures = builtInCpuFeatures(cpu) ++ Map(
-      "ENCODING_SAME" -> toLong(codec.name == srcCodec.name)
+      "ENCODING_NOLOWER" -> toLong(codec.supportsLowercase),
+      "ENCODING_SAME" -> toLong(codec.name == srcCodec.name),
+      "DECIMALS_SAME" -> toLong(codec.stringTerminator == srcCodec.stringTerminator && (0 to 9).forall{c =>
+        codec.encodeDigit(c) == srcCodec.encodeDigit(c)
+      }),
+      "ENCCONV_SUPPORTED" -> toLong((codec.name, srcCodec.name) match {
+        // TODO: don't rely on names!
+        case ("PETSCII", "CBM-Screen") |
+             ("PETSCII-JP", "CBM-Screen-JP") |
+             ("ATASCII", "ATASCII-Screen") =>
+          CpuFamily.forType(cpu) == CpuFamily.M6502
+        case ("Color-Computer", "Color-Computer-Screen") =>
+          CpuFamily.forType(cpu) == CpuFamily.M6809
+        case _ => codec.name == srcCodec.name
+      }),
+      "NULLCHAR_SAME" -> toLong(codec.stringTerminator == srcCodec.stringTerminator)
     )
 
     import scala.collection.JavaConverters._
@@ -307,7 +391,8 @@ object Platform {
       codec,
       srcCodec,
       builtInFeatures ++ definedFeatures,
-      outputPackager,
+      outputPackagers,
+      defaultOutputPackager,
       codeAllocators.toMap,
       variableAllocators.toMap,
       zpRegisterSize,
@@ -364,7 +449,8 @@ object Platform {
     }
   }
 
-  def parseNumber(s: String): Int = {
+  def parseNumber(str: String): Int = {
+    val s = str.trim
     if (s.startsWith("$")) {
       Integer.parseInt(s.substring(1), 16)
     } else if (s.startsWith("0x")) {
@@ -387,6 +473,20 @@ object Platform {
       Integer.parseInt(s.substring(2), 4)
     } else {
       s.toInt
+    }
+  }
+
+  def parseSymbolAndBonus(token: String): (String, Int) = {
+    if (token.contains("+")) {
+      token.split("\\+", 2) match {
+        case Array(n, b) => n.trim -> parseNumber(b)
+      }
+    } else if (token.contains("-")) {
+      token.split("-", 2) match {
+        case Array(n, b) => n.trim -> -parseNumber(b)
+      }
+    } else {
+      token.trim -> 0
     }
   }
 }

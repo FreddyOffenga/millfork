@@ -31,6 +31,10 @@ Available only if one of the following is true:
 
 * the default encoding is `atascii`, the screen encoding is `atasciiscr`, and the platform is 6502-based
 
+* the default encoding is `coco`, the screen encoding is `cococsr`, and the platform is 6809-based
+
+You can test for the availability of this function using the `ENCCONV_SUPPORTED` preprocessor feature.
+
 #### byte from_screencode(byte)
 
 Converts a byte from the screen encoding to the default encoding.
@@ -38,6 +42,30 @@ Converts a byte from the screen encoding to the default encoding.
 If both encodings contain the character `¤`, then `from_screencode('¤'scr) == '¤'`.
 
 Available only if `to_screencode` is available.
+
+#### void strz_to_screencode(pointer)
+
+Destructively converts a null-terminated string from the `default` encoding into the `scr` encoding. 
+
+Available only if `to_screencode` is available.
+
+#### void strz_from_screencode(pointer)
+
+Destructively converts a null-terminated string from the `scr` encoding into the `default` encoding. 
+
+Available only if `from_screencode` is available.
+
+#### void pstr_to_screencode(pointer)
+
+Destructively converts a length-prefixed string from the `default` encoding into the `scr` encoding. 
+
+Available only if `to_screencode` is available.
+
+#### void pstr_from_screencode(pointer)
+
+Destructively converts a length-prefixed string from the `scr` encoding into the `default` encoding. 
+
+Available only if `from_screencode` is available.
 
 #### byte petscii_to_petscr(byte)
 
@@ -57,7 +85,7 @@ Available only on 6502-based platforms.
 
 #### byte atascii_to_atasciiscr(byte)
 
-Converts a byte from ATASCII to a Atari screencode.  
+Converts a byte from ATASCII to an Atari screencode.  
 Control characters <$80 are converted to the graphical characters that share the ATASCII code.  
 Control characters ≥$80 are not supported.  
 
@@ -65,10 +93,24 @@ Available only on 6502-based platforms.
 
 #### byte atasciiscr_to_atascii(byte)
 
-Converts a byte from a Atari screencode to ATASCII.  
+Converts a byte from an Atari screencode to ATASCII.  
 Characters that share their ATASCII code with control characters are supported,
 but they require to be escaped with $1B to be printed.  
 Reverse characters are interpreted as non-reverse characters.
 
 Available only on 6502-based platforms.
+
+#### byte coco_to_cocoscr(byte)
+
+Converts a byte from Color Computer pseudo-ASCII to a Color Computer screencode.  
+Control characters <$20 are converted inverted punctuation.
+
+Available only on 6809-based platforms.
+
+#### byte cocoscr_to_coco(byte)
+
+Converts a byte from a Color Computer screencode to Color Computer pseudo-ASCII.  
+Inverted punctuation is converted to control characters.
+
+Available only on 6809-based platforms.
 

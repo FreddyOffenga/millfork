@@ -38,14 +38,21 @@ object ReverseFlowAnalyzerPerImpiedOpcode {
     CLI -> identity,
     WAI -> identity,
     STP -> identity,
+    KIL -> (_ => CpuImportance(
+          a = Unimportant, ah = Unimportant,
+          x = Unimportant, y = Unimportant, iz = Unimportant,
+          r0 = Unimportant, r1 = Unimportant, r2 = Unimportant, r3 = Unimportant,
+          z = Unimportant, n = Unimportant, c = Unimportant, v = Unimportant, d = Unimportant,
+          m = Unimportant, w = Unimportant)),
     BRK -> (_ => finalImportance),
     COP -> (_ => finalImportance),
     RTS -> (_ => finalImportance),
     RTL -> (_ => finalImportance),
 
     RTI -> (_ => CpuImportance(
-      a = Unimportant, ah = Unimportant,
-      x = Unimportant, y = Unimportant, iz = Unimportant,
+      a = Important, ah = Important,
+      x = Important, y = Important, iz = Important,
+      r0 = Important, r1 = Important, r2 = Important, r3 = Important,
       z = Unimportant, n = Unimportant, c = Unimportant, v = Unimportant, d = Unimportant,
       m = Unimportant, w = Unimportant)),
 
@@ -178,6 +185,7 @@ object ReverseFlowAnalyzerPerImpiedOpcode {
     CLA -> (_.copy(a = Unimportant)),
     CLX -> (_.copy(x = Unimportant)),
     CLY -> (_.copy(y = Unimportant)),
+    SET -> (_.copy(x = Important)),
 
   )
 

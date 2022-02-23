@@ -31,7 +31,7 @@ no extension for BBC micro program file,
 Default: If compiling one file with `.mfk` extension, the same name as the input file. Otherwise, `a`.
 
 
-* `-s` – Generate also the assembly output. It is not compatible with any assembler, but it serves purely informational purpose. The file has the same nam as the output file and the extension is `.asm`.
+* `-s` – Generate also the assembly output. It is not compatible with any assembler, but it serves purely informational purpose. The file has the same nam as the output file, and the extension is `.asm`.
 
 * `-g` – Generate also the label file. The label file contains labels with their addresses, with duplicates removed.
 It can be loaded into the monitor of the emulator for debugging purposes.
@@ -47,20 +47,35 @@ The extension and the file format are platform-dependent.
     * `-G sym` – format used by the WLA DX assembler. The extension is `.sym`.
     
     * `-G fceux` – multi-file format used by the FCEUX emulator. The extension is `.nl`.
+    
+    * `-G mesen` – format used by the Mesen emulator. The extension is `.mlb`.
+    
+    * `-G ld65` – a simplified version of the format used by the `ld65` linker (used by CC65 and CA65). The extension is `.dbg`.
+    
+    * `-G raw` – Millfork-specific format. The extension is '.labels'. Each row contains bank number, start address, end address (if known), object type, and Millfork-specific object identifier. 
+
+* `-fbreakpoints`, `-fno-breakpoints` – 
+Whether the compiler should use the `breakpoint` macro.
+When enabled, breakpoints become memory barriers and the label file will contain the breakpoints if the format supports them.
+Currently, the only formats that supports breakpoints are `vice` and `sym`.
+`.ini` equivalent: `breakpoints`. Default: yes.
 
 * `-I  <dir>;<dir>` – The include directories.
 Those directories are searched for modules and platform definitions.
 When searching for modules, the directory containing the file currently being compiled is also searched.
 When searching for platform definitions, the current working directory is also searched.
 If not given, the compiler will try to detect the default include directory.
-If given, then the compiler will NOT try to detect the default include directory and you will have to add it to the list yourself.
+If given, then the compiler will NOT try to detect the default include directory, and you will have to add it to the list yourself.
 
 * `-i <dir>` – Add a directory to the include directories.
 Unlike `-I`, this does not replace the default include directory and allows using directories with semicolons in their names. 
  
 * `-t <platform>` – Target platform. It is loaded from an `.ini` file found in any of the include directories. See also [this document](target-platforms.md).
 
-* `-r <program>` – Run given program after successful compilation. Useful for automatically launching emulators without any external scripting.
+* `-r <program>` – Run given program after successful compilation.
+Useful for automatically launching emulators without any external scripting.
+The program is run with the working directory set to its own directory,
+and it's passed the full path to the output file as its argument.
 
 * `-R <param>` – Adds a parameter to the command line of the program run with `-r`. All `-R` options are added in order, before the output file name.
 
@@ -181,6 +196,14 @@ Allow using the IY register for other purposes.
 Compiling to 8086 is based on translating from a mix of 8085 and Z80 instructions to 8086.
 See [the 8086 support disclaimer](./../lang/x86disclaimer.md).
 
+#### 6809-related
+
+* `-fuse-u-for-stack`, `-fuse-y-for-stack`
+Which of Z80 index registers should be used as the base pointer for accessing stack variables, if any. 
+`.ini` equivalent: `u_stack` and `y_stack`. Default: none.  
+**Warning: Currently, picking one of those two options is required!**
+The compiler doesn't support accessing the stack variables via the S stack pointer register yet.
+
 ## Optimization options
 
 * `-O0` – Disable all optimizations except unused global symbol removal.
@@ -188,6 +211,10 @@ See [the 8086 support disclaimer](./../lang/x86disclaimer.md).
 * `-O`, `-O2` ... `-O8` – Optimize code, various levels. For most code, anything above `-O4` doesn't improve it anymore. 
 
 * `-O9` – Optimize code using superoptimizer (experimental). Computationally very expensive, decent results.
+
+* `-fhints`, `-fno-hints` – 
+Whether optimization hints should be used.
+Default: yes.
 
 * `-finline`, `-fno-inline` – Whether should inline functions automatically.
 See the [documentation about inlining](../abi/inlining.md). Computationally easy, can give decent gains.
@@ -204,7 +231,7 @@ Default: yes.
 
 * `-foptimize-stdlib`, `-fno-optimize-stdlib` – 
 Whether should replace some standard library calls with constant parameters with more efficient variants.
-Currently affects `putstrz` and `strzlen`, but may affect more functions in the future.
+Currently affects `putstrz`, `putpstr`, `strzlen`, `scrstrlen` and `pstrlen`, but may affect more functions in the future.
 `.ini` equivalent: `optimize_stdlib`.
 Default: no.
 
@@ -220,7 +247,9 @@ Default: yes.
 
 * `-fsubroutine-extraction`, `-fno-subroutine-extraction` – 
 Whether identical fragments of functions should be extracted into subroutines (experimental).
-Makes the code smaller. Computationally very expensive.
+Makes the code smaller.
+For large programs, the effect is often much bigger than `-Os` (use both for even better effect).
+May occasionally be computationally very expensive.
 `.ini` equivalent: `subroutine_extraction`.
 Default: no. 
 
@@ -252,6 +281,52 @@ command line options `--inline`, `--dangerous-optimizations` `--fipo` and `--fno
 
 ## Warning options
 
+By default, the compiler emits only some of the most important warnings.
+
 * `-Wall` – Enable extra warnings.
 
+* `-Wnone` – Disable all warnings.
+
 * `-Wfatal` – Treat warnings as errors.
+
+You can also enable or disable warnings individually:
+
+* `-Wbuggy`, `-Wno-buggy` –
+    Whether should warn about code that may cause surprising behaviours or even miscompilation.
+    Default: enabled.
+
+* `-Wdeprecation`, `-Wno-deprecation` –
+    Whether should warn about deprecated aliases.
+    Default: enabled.
+
+* `-Wcomparisons`, `-Wno-comparisons` –
+    Whether should warn about comparisons between bytes and pointers.
+    Default: enabled.
+
+* `-Wextra-comparisons`, `-Wno-extra-comparisons` –
+    Whether should warn about simplifiable unsigned integer comparisons.
+    Default: disabled.
+
+* `-Wfallback`, `-Wno-fallback` –
+    Whether should warn about the use of default values by text codecs, the preprocessor, and array literals.
+    Default: enabled.
+
+* `-Wmissing-output`, `-Wno-missing-output` –
+    Whether should warn about data that is missing in output files. 
+    Default: enabled.
+
+* `-Woverlapping-call`, `-Wno-overlapping-call` –
+    Whether should warn about calls to functions in a different, yet overlapping segment.
+    Default: enabled.
+
+* `-Wror`, `-Wno-ror` –
+    Whether should warn about the ROR instruction (6502 only).
+    Default: disabled.
+
+* `-Wuseless`, `-Wno-useless` –
+    Whether should warn about code that does nothing. 
+    Default: enabled.
+
+* `-Whints`, `-Wno-hints` –
+    Whether should warn about unsupported optimization hints.
+    Default: enabled.

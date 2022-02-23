@@ -21,23 +21,11 @@ Setting up the test suite for Millfork is tricky, so if you don't need the tests
 
 #### Steps
 
-* delete the `src/test` directory
+* run `sbt -DskipTests compile`  
+to compile the project
 
-* remove all test dependencies from `build.sbt`: 
-
-      "org.scalatest" %% "scalatest"
-      "com.codingrodent.microprocessor" % "Z80Processor"
-      "NeatMonster" % "Intel8086"
-      "com.loomcom.symon" % "symon"
-      "com.grapeshot" % "halfnes"
-      "eu.rekawek.coffeegb" % "coffee-gb"
-      "roug.org.osnine" % "osnine-core"
-
-* navigate to the project directory 
-
-* run `sbt compile` to compile the project
-
-* run `sbt assembly` to build the executable jar file, it should appear in `target/scala-2.12`
+* run `sbt -DskipTests assembly`  
+to build the executable jar file, it should appear in `target/scala-2.12`
 
 ### Building with tests
 
@@ -45,7 +33,10 @@ Test suite is useful if you plan on modifying the compiler. Some test dependenci
 
 #### Prerequisites
 
-* JDK 1.8 with Nashorn (tests don't work on newer versions)
+* JDK 1.8 or later
+
+    * Millfork up to version 0.3.22 used to require exactly JDK 1.8 with Nashorn, 
+    as the tests didn't work on newer versions
 
 * sbt
 
@@ -58,7 +49,7 @@ Test suite is useful if you plan on modifying the compiler. Some test dependenci
         https://github.com/sethm/symon/tree/71905fdb1998ee4f142260879504bc46cf27648f
         https://github.com/andrew-hoffman/halfnes/tree/061
         https://github.com/trekawek/coffee-gb/tree/coffee-gb-1.0.0
-        https://github.com/sorenroug/osnine-java/tree/1b4e059c5886fe01e8901c70684f7eedefe65010
+        https://github.com/sorenroug/osnine-java/tree/b77349a6c314e1362e69b7158c385ac6f89b7ab8
         
 * for each of them, run `maven package` and `maven install`
 
@@ -66,7 +57,7 @@ Test suite is useful if you plan on modifying the compiler. Some test dependenci
 
 * run `sbt compile` to compile the project
 
-* run `sbt assemble` to build the executable jar file, it should appear in `target/scala-2.12`
+* run `sbt assembly` to build the executable jar file, it should appear in `target/scala-2.12`
 
 ### Building a native executable
 

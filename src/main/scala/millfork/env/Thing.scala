@@ -1,15 +1,16 @@
 package millfork.env
 
 import millfork.assembly.BranchingOpcodeMapping
-import millfork.{CompilationFlag, CompilationOptions, CpuFamily}
+import millfork.{CompilationFlag, CompilationOptions, CpuFamily, env}
 import millfork.node._
 import millfork.output.{MemoryAlignment, NoAlignment}
 
 sealed trait Thing {
   def name: String
+  def rootName: String = name
 }
 
-case class Alias(name: String, target: String, deprecated: Boolean = false) extends Thing
+case class Alias(name: String, target: String, deprecated: Boolean = false, local: Boolean = false) extends Thing
 
 sealed trait CallableThing extends Thing
 
@@ -17,17 +18,27 @@ sealed trait VariableLikeThing extends Thing
 
 sealed trait IndexableThing extends Thing
 
+case class ConstOnlyCallable(val name: String) extends CallableThing
+
 sealed trait Type extends CallableThing {
 
   def size: Int
 
+  def alignment: MemoryAlignment
+
+  def alignedSize: Int
+
   def isSigned: Boolean
+
+  def isBoollike: Boolean = false
 
   def isSubtypeOf(other: Type): Boolean = this == other
 
   def isCompatible(other: Type): Boolean = this == other
 
   override def toString: String = name
+
+  def isExplicitlyCastableTo(targetType: Type): Boolean = isAssignableTo(targetType)
 
   def isAssignableTo(targetType: Type): Boolean = isCompatible(targetType)
 
@@ -38,14 +49,36 @@ sealed trait Type extends CallableThing {
   def pointerTargetName: String = "byte"
 }
 
-sealed trait VariableType extends Type
+sealed trait VariableType extends Type {
+
+  var alignedSize: Int = if (alignment ne null) alignment.roundSizeUp(size) else size
+
+}
+
+case class Subvariable(suffix: String, offset: Int, isVolatile: Boolean, typ: VariableType, arrayIndexTypeAndSize: Option[(VariableType, Int)] = None)
 
 case object VoidType extends Type {
   def size = 0
 
+  def alignedSize = 0
+
   def isSigned = false
 
   override def name = "void"
+
+  override def alignment: MemoryAlignment = NoAlignment
+}
+
+case class InvalidType(nonce: Long) extends Type {
+  def size = 0
+
+  def alignedSize = 0
+
+  def isSigned = false
+
+  override def name = "$invalid"
+
+  override def alignment: MemoryAlignment = NoAlignment
 }
 
 sealed trait PlainType extends VariableType {
@@ -64,12 +97,16 @@ case class BasicPlainType(name: String, size: Int) extends PlainType {
   def isSigned = false
 
   override def isSubtypeOf(other: Type): Boolean = this == other
+
+  override def alignment: MemoryAlignment = NoAlignment
 }
 
 case class DerivedPlainType(name: String, parent: PlainType, isSigned: Boolean, override val isPointy: Boolean) extends PlainType {
   def size: Int = parent.size
 
   override def isSubtypeOf(other: Type): Boolean = parent == other || parent.isSubtypeOf(other)
+
+  override def alignment: MemoryAlignment = parent.alignment
 }
 
 case class PointerType(name: String, targetName: String, var target: Option[Type]) extends VariableType {
@@ -80,6 +117,14 @@ case class PointerType(name: String, targetName: String, var target: Option[Type
   override def isPointy: Boolean = true
 
   override def pointerTargetName: String = targetName
+
+  override def alignment: MemoryAlignment = NoAlignment
+
+  override def isCompatible(other: Type): Boolean = this == other || ((target -> other) match {
+    case (Some(t1), PointerType(_, _, Some(t2))) => t1 == t2
+    case (_, PointerType(_, t, _)) => targetName == t
+    case _ => false
+  })
 }
 
 case class FunctionPointerType(name: String, paramTypeName:String, returnTypeName: String, var paramType: Option[Type], var returnType: Option[Type]) extends VariableType {
@@ -88,6 +133,40 @@ case class FunctionPointerType(name: String, paramTypeName:String, returnTypeNam
   override def isSigned: Boolean = false
 
   override def isPointy: Boolean = false
+
+  override def alignment: MemoryAlignment = NoAlignment
+}
+
+case object KernalInterruptPointerType extends VariableType {
+  def size = 2
+
+  override def isSigned: Boolean = false
+
+  override def isPointy: Boolean = false
+
+  override def alignment: MemoryAlignment = NoAlignment
+
+  override def name: String = "pointer.kernal_interrupt"
+
+  override def isCompatible(other: Type): Boolean = other match {
+    case KernalInterruptPointerType => true
+    case FunctionPointerType(_, "void", "void", _, _) => true
+    case _ => false
+  }
+}
+
+case object InterruptPointerType extends VariableType {
+  def size = 2
+
+  override def isSigned: Boolean = false
+
+  override def isPointy: Boolean = false
+
+  override def alignment: MemoryAlignment = NoAlignment
+
+  override def name: String = "pointer.interrupt"
+
+  override def isCompatible(other: Type): Boolean = other == InterruptPointerType
 }
 
 case object NullType extends VariableType {
@@ -102,34 +181,43 @@ case object NullType extends VariableType {
   override def isSubtypeOf(other: Type): Boolean = this == other || (other.isPointy || other.isInstanceOf[FunctionPointerType]) && other.size == 2
 
   override def isAssignableTo(targetType: Type): Boolean = this == targetType || (targetType.isPointy || targetType.isInstanceOf[FunctionPointerType]) && targetType.size == 2
+
+  override def alignment: MemoryAlignment = NoAlignment
 }
 
 case class EnumType(name: String, count: Option[Int]) extends VariableType {
   override def size: Int = 1
 
   override def isSigned: Boolean = false
+
+  override def alignment: MemoryAlignment = NoAlignment
 }
 
-sealed trait CompoundVariableType extends VariableType
-
-case class StructType(name: String, fields: List[FieldDesc]) extends CompoundVariableType {
+sealed trait CompoundVariableType extends VariableType {
   override def size: Int = mutableSize
   var mutableSize: Int = -1
-  var mutableFieldsWithTypes: List[(Type, String)] = Nil
+
+  var mutableFieldsWithTypes: List[ResolvedFieldDesc] = Nil
+
+  override def alignment: MemoryAlignment = mutableAlignment
+  def baseAlignment: MemoryAlignment
+  //noinspection ConvertNullInitializerToUnderscore
+  var mutableAlignment: MemoryAlignment = null
   override def isSigned: Boolean = false
 }
 
-case class UnionType(name: String, fields: List[FieldDesc]) extends CompoundVariableType {
-  override def size: Int = mutableSize
-  var mutableSize: Int = -1
-  var mutableFieldsWithTypes: List[(Type, String)] = Nil
-  override def isSigned: Boolean = false
+case class StructType(name: String, fields: List[FieldDesc], baseAlignment: MemoryAlignment) extends CompoundVariableType {
+}
+
+case class UnionType(name: String, fields: List[FieldDesc], baseAlignment: MemoryAlignment) extends CompoundVariableType {
 }
 
 case object FatBooleanType extends VariableType {
   override def size: Int = 1
 
   override def isSigned: Boolean = false
+
+  override def isBoollike: Boolean = true
 
   override def name: String = "bool"
 
@@ -138,14 +226,26 @@ case object FatBooleanType extends VariableType {
   override def isSubtypeOf(other: Type): Boolean = this == other
 
   override def isAssignableTo(targetType: Type): Boolean = this == targetType
+
+  override def isExplicitlyCastableTo(targetType: Type): Boolean = targetType.isArithmetic || isAssignableTo(targetType)
+
+  override def alignment: MemoryAlignment = NoAlignment
 }
 
 sealed trait BooleanType extends Type {
   def size = 0
 
+  def alignedSize = 0
+
   def isSigned = false
 
+  override def isBoollike: Boolean = true
+
   override def isAssignableTo(targetType: Type): Boolean = isCompatible(targetType) || targetType == FatBooleanType
+
+  override def isExplicitlyCastableTo(targetType: Type): Boolean = targetType.isArithmetic || isAssignableTo(targetType)
+
+  override def alignment: MemoryAlignment = NoAlignment
 }
 
 case class ConstantBooleanType(name: String, value: Boolean) extends BooleanType
@@ -160,11 +260,17 @@ sealed trait TypedThing extends Thing {
   def typ: Type
 }
 
+sealed trait ConstantLikeThing extends TypedThing {
+
+}
+
 
 sealed trait ThingInMemory extends Thing {
   def zeropage: Boolean
 
   def toAddress: Constant
+
+  def hasOptimizationHints: Boolean = false
 
   var farFlag: Option[Boolean] = None
   val declaredBank: Option[String]
@@ -182,7 +288,11 @@ sealed trait PreallocableThing extends ThingInMemory {
 
   def alignment: MemoryAlignment
 
-  def toAddress: Constant = address.getOrElse(MemoryAddressConstant(this))
+  def toAddress: Constant = if (hasOptimizationHints) {
+    MemoryAddressConstant(this)
+  } else {
+    address.getOrElse(MemoryAddressConstant(this))
+  }
 }
 
 case class Label(name: String) extends ThingInMemory {
@@ -212,6 +322,10 @@ sealed trait VariableInMemory extends Variable with ThingInMemory with Indexable
 
   override def bank(compilationOptions: CompilationOptions): String =
     declaredBank.getOrElse("default")
+
+  def optimizationHints: Set[String]
+
+  override def hasOptimizationHints: Boolean = optimizationHints.nonEmpty
 }
 
 case class RegisterVariable(register: MosRegister.Value, typ: Type) extends Variable {
@@ -235,7 +349,7 @@ case class Placeholder(name: String, typ: Type) extends Variable {
 }
 
 sealed trait UninitializedMemory extends ThingInMemory {
-  def sizeInBytes: Int
+  def  sizeInBytes: Int
 
   def alloc: VariableAllocationMethod.Value
 
@@ -265,9 +379,10 @@ case class UninitializedMemoryVariable(
                                         alloc:
                                         VariableAllocationMethod.Value,
                                         declaredBank: Option[String],
+                                        override val optimizationHints: Set[String],
                                         override val alignment: MemoryAlignment,
                                         override val isVolatile: Boolean) extends MemoryVariable with UninitializedMemory {
-  override def sizeInBytes: Int = typ.size
+  override def sizeInBytes: Int = typ.alignedSize
 
   override def zeropage: Boolean = alloc == VariableAllocationMethod.Zeropage
 
@@ -280,6 +395,7 @@ case class InitializedMemoryVariable(
                                       typ: Type,
                                       initialValue: Expression,
                                       declaredBank: Option[String],
+                                      override val optimizationHints: Set[String],
                                       override val alignment: MemoryAlignment,
                                       override val isVolatile: Boolean) extends MemoryVariable with PreallocableThing {
   override def zeropage: Boolean = false
@@ -298,9 +414,18 @@ trait MfArray extends ThingInMemory with IndexableThing {
   def sizeInBytes: Int
   def elementCount: Int
   def readOnly: Boolean
+  def optimizationHints: Set[String]
+  override def hasOptimizationHints: Boolean = optimizationHints.nonEmpty
 }
 
-case class UninitializedArray(name: String, elementCount: Int, declaredBank: Option[String], indexType: VariableType, elementType: VariableType, override val readOnly: Boolean, override val alignment: MemoryAlignment) extends MfArray with UninitializedMemory {
+case class UninitializedArray(name: String,
+                              elementCount: Int,
+                              declaredBank: Option[String],
+                              indexType: VariableType,
+                              elementType: VariableType,
+                              override val readOnly: Boolean,
+                              override val optimizationHints: Set[String],
+                              override val alignment: MemoryAlignment) extends MfArray with UninitializedMemory {
   override def toAddress: MemoryAddressConstant = MemoryAddressConstant(this)
 
   override def alloc: VariableAllocationMethod.Value = VariableAllocationMethod.Static
@@ -311,10 +436,16 @@ case class UninitializedArray(name: String, elementCount: Int, declaredBank: Opt
 
   override def zeropage: Boolean = false
 
-  override def sizeInBytes: Int = elementCount * elementType.size
+  override def sizeInBytes: Int = elementCount * elementType.alignedSize
 }
 
-case class RelativeArray(name: String, address: Constant, elementCount: Int, declaredBank: Option[String], indexType: VariableType, elementType: VariableType, override val readOnly: Boolean) extends MfArray {
+case class RelativeArray(name: String,
+                         address: Constant,
+                         elementCount: Int,
+                         declaredBank: Option[String],
+                         indexType: VariableType,
+                         elementType: VariableType,
+                         override val readOnly: Boolean) extends MfArray {
   override def toAddress: Constant = address
 
   override def isFar(compilationOptions: CompilationOptions): Boolean = farFlag.getOrElse(false)
@@ -323,10 +454,22 @@ case class RelativeArray(name: String, address: Constant, elementCount: Int, dec
 
   override def zeropage: Boolean = false
 
-  override def sizeInBytes: Int = elementCount * elementType.size
+  override def sizeInBytes: Int = elementCount * elementType.alignedSize
+
+  override def rootName: String = address.rootThingName
+
+  override def optimizationHints: Set[String] = Set.empty
 }
 
-case class InitializedArray(name: String, address: Option[Constant], contents: Seq[Expression], declaredBank: Option[String], indexType: VariableType, elementType: VariableType, override val readOnly: Boolean, override val alignment: MemoryAlignment) extends MfArray with PreallocableThing {
+case class InitializedArray(name: String,
+                            address: Option[Constant],
+                            contents: Seq[Expression],
+                            declaredBank: Option[String],
+                            indexType: VariableType,
+                            elementType: VariableType,
+                            override val readOnly: Boolean,
+                            override val optimizationHints: Set[String],
+                            override val alignment: MemoryAlignment) extends MfArray with PreallocableThing {
   override def shouldGenerate = true
 
   override def isFar(compilationOptions: CompilationOptions): Boolean = farFlag.getOrElse(false)
@@ -338,11 +481,20 @@ case class InitializedArray(name: String, address: Option[Constant], contents: S
 
   override def elementCount: Int = contents.size
 
-  override def sizeInBytes: Int = contents.size * elementType.size
+  override def sizeInBytes: Int = contents.size * elementType.alignedSize
 }
 
-case class RelativeVariable(name: String, address: Constant, typ: Type, zeropage: Boolean, declaredBank: Option[String], override val isVolatile: Boolean) extends VariableInMemory {
+case class RelativeVariable(name: String,
+                            address: Constant,
+                            typ: Type,
+                            zeropage: Boolean,
+                            declaredBank: Option[String],
+                            override val isVolatile: Boolean) extends VariableInMemory {
   override def toAddress: Constant = address
+
+  override def rootName: String = address.rootThingName
+
+  override def optimizationHints: Set[String] = Set.empty
 }
 
 sealed trait MangledFunction extends CallableThing {
@@ -353,6 +505,10 @@ sealed trait MangledFunction extends CallableThing {
   def params: ParamSignature
 
   def interrupt: Boolean
+
+  def kernalInterrupt: Boolean
+
+  def isConstPure: Boolean
 
   def canBePointedTo: Boolean
 
@@ -366,20 +522,30 @@ case class EmptyFunction(name: String,
 
   override def interrupt = false
 
+  override def kernalInterrupt: Boolean = false
+
+  override def isConstPure = false
+
   override def canBePointedTo: Boolean = false
 }
 
 case class MacroFunction(name: String,
                          returnType: Type,
-                         params: ParamSignature,
+                         params: AssemblyOrMacroParamSignature,
+                         isInAssembly: Boolean,
                          environment: Environment,
+                         constants: List[VariableDeclarationStatement],
                          code: List[ExecutableStatement]) extends MangledFunction {
   override def interrupt = false
+
+  override def kernalInterrupt: Boolean = false
+
+  override def isConstPure = false
 
   override def canBePointedTo: Boolean = false
 }
 
-sealed trait FunctionInMemory extends MangledFunction with ThingInMemory {
+sealed trait FunctionInMemory extends MangledFunction with ThingInMemory with TypedThing with VariableLikeThing with ConstantLikeThing {
   def environment: Environment
 
   override def isFar(compilationOptions: CompilationOptions): Boolean =
@@ -391,6 +557,24 @@ sealed trait FunctionInMemory extends MangledFunction with ThingInMemory {
   override def canBePointedTo: Boolean = !interrupt && returnType.size <= 2 && params.canBePointedTo && name !="call"
 
   override def requiresTrampoline(compilationOptions: CompilationOptions): Boolean = params.requireTrampoline(compilationOptions)
+
+  def optimizationHints: Set[String]
+
+  override def hasOptimizationHints: Boolean = optimizationHints.nonEmpty
+
+  override lazy val typ: Type = {
+    if (interrupt || kernalInterrupt) {
+      InvalidType(name.hashCode())
+    } else {
+      val paramType = params.types match {
+        case Nil => VoidType
+        case List(t) => t
+        case _ => InvalidType(params.types.hashCode())
+      }
+      val typeName = "function." + paramType.name + ".to." + returnType.name
+      FunctionPointerType(typeName, paramType.name, returnType.name, Some(paramType), Some(returnType))
+    }
+  }
 }
 
 case class ExternFunction(name: String,
@@ -398,10 +582,15 @@ case class ExternFunction(name: String,
                           params: ParamSignature,
                           address: Constant,
                           environment: Environment,
+                          override val optimizationHints: Set[String],
                           declaredBank: Option[String]) extends FunctionInMemory {
-  override def toAddress: Constant = address
+  override def toAddress: Constant = if (hasOptimizationHints) MemoryAddressConstant(this) else address
 
   override def interrupt = false
+
+  override def kernalInterrupt: Boolean = false
+
+  override def isConstPure = false
 
   override def zeropage: Boolean = false
 
@@ -418,6 +607,9 @@ case class NormalFunction(name: String,
                           hasElidedReturnVariable: Boolean,
                           interrupt: Boolean,
                           kernalInterrupt: Boolean,
+                          inAssembly: Boolean,
+                          isConstPure: Boolean,
+                          override val optimizationHints: Set[String],
                           reentrant: Boolean,
                           position: Option[Position],
                           declaredBank: Option[String],
@@ -429,7 +621,7 @@ case class NormalFunction(name: String,
   override def isVolatile: Boolean = false
 }
 
-case class ConstantThing(name: String, value: Constant, typ: Type) extends TypedThing with VariableLikeThing with IndexableThing {
+case class ConstantThing(name: String, value: Constant, typ: Type) extends TypedThing with VariableLikeThing with IndexableThing with ConstantLikeThing {
   def map(f: Constant => Constant) = ConstantThing("", f(value), typ)
 }
 
@@ -495,6 +687,12 @@ case class ByVariable(name: String) extends ParamPassingConvention {
   override def inNonInlinedOnly = true
 }
 
+case class ByLazilyEvaluableExpressionVariable(name: String) extends ParamPassingConvention {
+  override def inInlinedOnly = true
+
+  override def inNonInlinedOnly = false
+}
+
 case class ByConstant(name: String) extends ParamPassingConvention {
   override def inInlinedOnly = true
 
@@ -508,10 +706,10 @@ case class ByReference(name: String) extends ParamPassingConvention {
 }
 
 object AssemblyParameterPassingBehaviour extends Enumeration {
-  val Copy, ByReference, ByConstant = Value
+  val Copy, Eval, ByReference, ByConstant = Value
 }
 
-case class AssemblyParam(typ: Type, variable: TypedThing, behaviour: AssemblyParameterPassingBehaviour.Value) {
+case class AssemblyOrMacroParam(typ: Type, variable: TypedThing, behaviour: AssemblyParameterPassingBehaviour.Value) {
   def canBePointedTo: Boolean = behaviour == AssemblyParameterPassingBehaviour.Copy && (variable match {
     case RegisterVariable(MosRegister.A | MosRegister.AX, _) => true
     case ZRegisterVariable(ZRegister.A | ZRegister.HL, _) => true
@@ -520,7 +718,7 @@ case class AssemblyParam(typ: Type, variable: TypedThing, behaviour: AssemblyPar
 }
 
 
-case class AssemblyParamSignature(params: List[AssemblyParam]) extends ParamSignature {
+case class AssemblyOrMacroParamSignature(params: List[AssemblyOrMacroParam]) extends ParamSignature {
   override def length: Int = params.length
 
   override def types: List[Type] = params.map(_.typ)

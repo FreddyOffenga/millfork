@@ -14,8 +14,23 @@ Octal: `0o172`
 
 Hexadecimal: `$D323`, `0x2a2`
 
-When using Intel syntax for inline assembly, another hexadecimal syntax is available: `0D323H`, `2a2h`.
+Digits can be separated by underscores for readability. Underscores are also allowed between the radix prefix and the digits:
+
+    123_456
+    0x01_ff
+    0b_0101_1111__1100_0001
+    $___________FF
+
+When using Intel syntax for inline assembly, another hexadecimal syntax is available: `0D323H`, `2a2h`, `3e_h`.
 It is not allowed in any other places.
+
+The type of a literal is the smallest type of undefined signedness
+that can fit either the unsigned or signed representation of the value:
+`200` is a `byte`, `4000` is a `word`, `75000` is an `int24` etc.
+
+However, padding the literal to the left with zeroes changes the type
+to the smallest type that can fit the smallest number with the same number of digits and without padding.
+For example, `0002` is of type `word`, as 1000 does not fit in one byte.
 
 ## String literals
 
@@ -35,18 +50,65 @@ If there is no encoding name specified, then the `default` encoding is used.
 Two encoding names are special and refer to platform-specific encodings:
 `default` and `scr`.
 
+## Zero-terminated strings
+
 You can also append `z` to the name of the encoding to make the string zero-terminated.
-This means that the string will have one extra byte appended, equal to `nullchar`.
-The exact value of `nullchar` is encoding-dependent:
+This means that the string will have a string terminator appended, usually a single byte.
+The exact value of that byte is encoding-dependent:
 * in the `vectrex` encoding it's 128,
 * in the `zx80` encoding it's 1,
 * in the `zx81` encoding it's 11,
+* in the `petscr` and `petscrjp` encodings it's 224,
+* in the `atascii` encoding it's 219,
 * in the `utf16be` and `utf16le` encodings it's exceptionally two bytes: 0, 0
-* in other encodings it's 0 (this might be a subject to change in future versions).
-
+* in other encodings it's 0 (this may be a subject to change in future versions).
 
         "this is a zero-terminated string" asciiz
         "this is also a zero-terminated string"z
+
+The byte constant `nullchar` is defined to be equal to the string terminator in the `default` encoding (or, in other words, to `'{nullchar}'`)
+and the byte constant `nullchar_scr` is defined to be equal to the string terminator in the `scr` encoding (`'{nullchar}'scr`).
+
+You can override the values for `nullchar` and `nullchar_scr`
+by defining preprocessor features `NULLCHAR` and `NULLCHAR_SCR` respectively. 
+
+Warning: If you define UTF-16 or UTF-32 to be you default or screen encoding, you will encounter several problems:
+
+* `nullchar` and `nullchar_scr` will still be bytes, equal to zero.
+* the `string` module in the Millfork standard library will not work correctly
+
+## Length-prefixed strings (Pascal strings)
+
+You can also prepend `p` to the name of the encoding to make the string length-prefixed.
+
+The length is measured in bytes and doesn't include the zero terminator, if present.
+In all encodings except for UTF-16 and UTF-32 the prefix takes one byte,
+which means that length-prefixed strings cannot be longer than 255 bytes.
+ 
+In case of UTF-16, the length prefix contains the number of code units,
+so the number of bytes divided by two,
+which allows for strings of practically unlimited length.
+The length is stored as two bytes and is always little endian,
+even in case of the `utf16be` encoding or a big-endian processor.
+ 
+In case of UTF-32, the length prefix contains the number of Unicode codepoints,
+so the number of bytes divided by four.
+The length is stored as four bytes and is always little endian,
+even in case of the `utf32be` encoding or a big-endian processor.
+
+        "this is a Pascal string" pascii
+        "this is also a Pascal string"p
+        "this is a zero-terminated Pascal string"pz
+
+Note: A string that's both length-prefixed and zero-terminated does not count as a normal zero-terminated string!
+To pass it to a function that expects a zero-terminated string, add 1 (or, in case of UTF-16, 2, or UTF-32, 4):
+
+    pointer p
+    p = "test"pz
+    // putstrz(p)  // won't work correctly
+    putstrz(p + 1) // ok
+
+## Escape sequences and miscellaneous compatibility issues
 
 Most characters between the quotes are interpreted literally.
 To allow characters that cannot be inserted normally,
@@ -151,6 +213,7 @@ An array is initialized with either:
         array b = "----" scr
         array c = ["hello world!" ascii, 13]
         array d = file("d.bin")
+        array d1 = file("d.bin", 128)
         array e = file("d.bin", 128, 256)
         array f = for x,0,until,8 [x * 3 + 5]  // equivalent to [5, 8, 11, 14, 17, 20, 23, 26]
         array(point) g = [point(2,3), point(5,6)]
@@ -158,8 +221,19 @@ An array is initialized with either:
 
 Trailing commas (`[1, 2,]`) are not allowed.
 
+String literals are laid out in the arrays as-is, flat.
+To have an array of pointers to strings, wrap each string in `pointer(...)`:
+
+    // a.length = 12; identical to [$48, $45, $4C, $4C, $4F, 0, $57, $4F, $52, $4C, $44, 0]
+    array a = [ "hello"z, "world"z ] 
+    // b.length = 2
+    array(pointer) b = [ pointer("hello"z), pointer("world"z) ]
+
 The parameters for `file` are: file path, optional start offset, optional length
-(start offset and length have to be either both present or both absent).
+(if only two parameters are present, then the second one is assumed to be the start offset).
+The `file` expression is expanded at the compile time to an array of bytes equal to the bytes contained in the file.
+If the start offset is present, then that many bytes at the start of the file are skipped.
+If the length is present, then only that many bytes are taken, otherwise, all bytes until the end of the file are taken. 
 
 The `for`-style expression has a variable, a starting index, a direction, a final index, 
 and a parameterizable array initializer.
@@ -171,7 +245,7 @@ Fields of arithmetic, pointer and enum types are declared using normal expressio
 Fields of struct types are declared using struct constructors.
 Fields of union types cannot be declared.
 
-What might be useful is the fact that the compiler allows for built-in trigonometric functions
+What might be useful is the fact that the compiler allows for certain built-in functions
 in constant expressions only:
 
 * `sin(x, n)` – returns _n_·**sin**(*x*π/128)
@@ -179,4 +253,8 @@ in constant expressions only:
 * `cos(x, n)` – returns _n_·**cos**(*x*π/128)
 
 * `tan(x, n)` – returns _n_·**tan**(*x*π/128)
+
+* `min(x,...)` – returns the smallest argument
+
+* `max(x,...)` – returns the largest argument
 

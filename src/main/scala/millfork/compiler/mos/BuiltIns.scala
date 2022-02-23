@@ -333,9 +333,134 @@ object BuiltIns {
   }
 
   def compileInPlaceWordOrLongShiftOps(ctx: CompilationContext, lhs: LhsExpression, rhs: Expression, aslRatherThanLsr: Boolean): List[AssemblyLine] = {
-    if (lhs.isInstanceOf[DerefExpression]) {
-      ctx.log.error("Too complex left-hand-side expression", lhs.position)
-      return MosExpressionCompiler.compileToAX(ctx, lhs) ++ MosExpressionCompiler.compileToAX(ctx, rhs)
+    val reg = ctx.env.get[VariableInMemory]("__reg")
+    lhs match  {
+      case dx: DerefExpression =>
+        val el = if(dx.isVolatile) Elidability.Volatile else Elidability.Elidable
+        if (ctx.options.zpRegisterSize < 4) {
+          ctx.log.error("Unsupported shift operation. Consider increasing the size of the zeropage register or simplifying the left hand side expression.", lhs.position)
+          return MosExpressionCompiler.compileToAX(ctx, lhs) ++ MosExpressionCompiler.compileToAX(ctx, rhs)
+        }
+        return handleWordOrLongInPlaceModificationViaDeref(ctx, dx, rhs, fromMsb = !aslRatherThanLsr){ (ptr, reg, offset, r) =>
+          val shiftAmount = r match {
+            case List(AssemblyLine0(LDA, Immediate, NumericConstant(a, _)), AssemblyLine0(LDX, Immediate, _)) => Some(a.toInt)
+            case _ => None
+          }
+          val loadToR2 =
+            List(
+              AssemblyLine.immediate(LDY, offset),
+              AssemblyLine.indexedY(LDA, ptr).copy(elidability = el),
+              AssemblyLine.zeropage(STA, reg, 2),
+              AssemblyLine.implied(INY),
+              AssemblyLine.indexedY(LDA, ptr).copy(elidability = el),
+              AssemblyLine.zeropage(STA, reg, 3))
+          val storeFromR2 =
+            List(
+              AssemblyLine.immediate(LDY, offset),
+              AssemblyLine.zeropage(LDA, reg, 2),
+              AssemblyLine.indexedY(STA, ptr).copy(elidability = el),
+              AssemblyLine.implied(INY),
+              AssemblyLine.zeropage(LDA, reg, 3),
+              AssemblyLine.indexedY(STA, ptr).copy(elidability = el))
+          val shiftR2 =
+            if (aslRatherThanLsr) List(AssemblyLine.zeropage(ASL, reg, 2), AssemblyLine.zeropage(ROL, reg, 3))
+            else List(AssemblyLine.zeropage(LSR, reg, 3), AssemblyLine.zeropage(ROR, reg, 2))
+          shiftAmount match {
+            case Some(0) => Nil
+            case Some(1) if aslRatherThanLsr =>
+              List(
+                AssemblyLine.immediate(LDY, offset),
+                AssemblyLine.indexedY(LDA, ptr).copy(elidability = el),
+                AssemblyLine.implied(ASL),
+                AssemblyLine.indexedY(STA, ptr).copy(elidability = el),
+                AssemblyLine.implied(INY),
+                AssemblyLine.indexedY(LDA, ptr).copy(elidability = el),
+                AssemblyLine.implied(ROL),
+                AssemblyLine.indexedY(STA, ptr).copy(elidability = el))
+            case Some(1) if !aslRatherThanLsr =>
+              List(
+                AssemblyLine.immediate(LDY, offset + 1),
+                AssemblyLine.indexedY(LDA, ptr).copy(elidability = el),
+                AssemblyLine.implied(LSR),
+                AssemblyLine.indexedY(STA, ptr).copy(elidability = el),
+                AssemblyLine.implied(DEY),
+                AssemblyLine.indexedY(LDA, ptr).copy(elidability = el),
+                AssemblyLine.implied(ROR),
+                AssemblyLine.indexedY(STA, ptr).copy(elidability = el))
+            case Some(n) if n >= 1 && n <= 7 => // TODO: pick optimal
+              loadToR2 ++ List.fill(n)(shiftR2).flatten ++ storeFromR2
+            case _ =>
+              val labelSkip = ctx.nextLabel("ss")
+              val labelRepeat = ctx.nextLabel("sr")
+              List(AssemblyLine.implied(TAX), AssemblyLine.relative(BEQ, labelSkip)) ++
+                loadToR2 ++
+                List(AssemblyLine.label(labelRepeat)) ++
+                shiftR2 ++ List(
+                AssemblyLine.implied(DEX),
+                AssemblyLine.relative(BNE, labelRepeat)) ++
+                storeFromR2 ++ List(
+                AssemblyLine.label(labelSkip))
+          }
+        }(Left({ size =>
+          val compiledRhs = MosExpressionCompiler.compileToA(ctx, rhs)
+          val shiftAmount = compiledRhs match {
+            case List(AssemblyLine0(LDA, Immediate, NumericConstant(a, _))) => Some(a.toInt)
+            case _ => None
+          }
+          val innerLoopLabel = ctx.nextLabel("sr")
+          val singleShift = if (aslRatherThanLsr) {
+            List(
+              AssemblyLine.implied(CLC),
+              AssemblyLine.immediate(LDY, 0),
+              AssemblyLine.label(innerLoopLabel),
+              AssemblyLine.indexedY(LDA, reg).copy(elidability = el),
+              AssemblyLine.implied(ROL),
+              AssemblyLine.indexedY(STA, reg).copy(elidability = el),
+              AssemblyLine.implied(INY),
+              AssemblyLine.immediate(CPY, size),
+              AssemblyLine.relative(BNE, innerLoopLabel))
+          } else {
+            List(
+              AssemblyLine.implied(CLC),
+              AssemblyLine.immediate(LDY, size - 1),
+              AssemblyLine.label(innerLoopLabel),
+              AssemblyLine.indexedY(LDA, reg).copy(elidability = el),
+              AssemblyLine.implied(ROR),
+              AssemblyLine.indexedY(STA, reg).copy(elidability = el),
+              AssemblyLine.implied(DEY),
+              AssemblyLine.relative(BPL, innerLoopLabel))
+          }
+          shiftAmount match {
+            case Some(0) => Nil
+            case Some(n) if n >= size * 8 =>
+              List(
+                AssemblyLine.immediate(LDY, size - 1),
+                AssemblyLine.label(innerLoopLabel),
+                AssemblyLine.immediate(LDA, 0),
+                AssemblyLine.indexedY(STA, reg).copy(elidability = el),
+                AssemblyLine.implied(DEY),
+                AssemblyLine.relative(BPL, innerLoopLabel))
+            case Some(1) => singleShift
+            case Some(n) if n > 0 =>
+              val labelRepeat = ctx.nextLabel("sr")
+              compiledRhs ++ List(
+                AssemblyLine.implied(TAX),
+                AssemblyLine.label(labelRepeat)) ++ singleShift ++ List(
+                AssemblyLine.implied(DEX),
+                AssemblyLine.relative(BNE, labelRepeat))
+            case _ =>
+              val labelSkip = ctx.nextLabel("ss")
+              val labelRepeat = ctx.nextLabel("sr")
+              compiledRhs ++ List(
+                AssemblyLine.implied(TAX),
+                AssemblyLine.relative(BEQ, labelSkip),
+                AssemblyLine.label(labelRepeat)) ++ singleShift ++ List(
+                AssemblyLine.implied(DEX),
+                AssemblyLine.relative(BNE, labelRepeat),
+                AssemblyLine.label(labelSkip))
+          }
+        }))
+      case _ =>
     }
     val env = ctx.env
     val b = env.get[Type]("byte")
@@ -419,7 +544,7 @@ object BuiltIns {
     }
     val firstParamCompiled = MosExpressionCompiler.compile(ctx, lhs, Some(b -> RegisterVariable(MosRegister.A, b)), NoBranching)
     val maybeConstant = env.eval(rhs)
-    maybeConstant match {
+    if (ctx.options.flag(CompilationFlag.UselessCodeWarning)) maybeConstant match {
       case Some(NumericConstant(0, _)) =>
         compType match {
           case ComparisonType.LessUnsigned =>
@@ -917,28 +1042,51 @@ object BuiltIns {
       case ComparisonType.LessSigned =>
         val fixup = ctx.nextLabel("co")
         cmpTo(LDA, ll) ++
-          List(AssemblyLine.implied(SEC)) ++
-          cmpTo(SBC, rl) ++
+          cmpTo(CMP, rl) ++
           cmpTo(LDA, lh) ++
           cmpTo(SBC, rh) ++
           List(
             AssemblyLine.relative(BVC, fixup),
             AssemblyLine.immediate(EOR, 0x80),
-            AssemblyLine.label(fixup))
-        List(AssemblyLine.relative(BCC, x))
+            AssemblyLine.label(fixup))++
+        List(AssemblyLine.relative(BMI, x))
 
       case ComparisonType.GreaterOrEqualSigned =>
         val fixup = ctx.nextLabel("co")
         cmpTo(LDA, ll) ++
-          List(AssemblyLine.implied(SEC)) ++
-          cmpTo(SBC, rl) ++
+          cmpTo(CMP, rl) ++
           cmpTo(LDA, lh) ++
           cmpTo(SBC, rh) ++
           List(
             AssemblyLine.relative(BVC, fixup),
             AssemblyLine.immediate(EOR, 0x80),
-            AssemblyLine.label(fixup))
-        List(AssemblyLine.relative(BCS, x))
+            AssemblyLine.label(fixup))++
+        List(AssemblyLine.relative(BPL, x))
+
+      case ComparisonType.GreaterSigned =>
+        val fixup = ctx.nextLabel("co")
+        cmpTo(LDA, rl) ++
+          cmpTo(CMP, ll) ++
+          cmpTo(LDA, rh) ++
+          cmpTo(SBC, lh) ++
+          List(
+            AssemblyLine.relative(BVC, fixup),
+            AssemblyLine.immediate(EOR, 0x80),
+            AssemblyLine.label(fixup))++
+        List(AssemblyLine.relative(BMI, x))
+
+      case ComparisonType.LessOrEqualSigned =>
+        val fixup = ctx.nextLabel("co")
+        cmpTo(LDA, rl) ++
+          cmpTo(CMP, ll) ++
+          cmpTo(LDA, rh) ++
+          cmpTo(SBC, lh) ++
+          List(
+            AssemblyLine.relative(BVC, fixup),
+            AssemblyLine.immediate(EOR, 0x80),
+            AssemblyLine.label(fixup))++
+        List(AssemblyLine.relative(BPL, x))
+
       case _ => ???
       // TODO: signed word comparisons: <=, >
     }
@@ -1046,9 +1194,86 @@ object BuiltIns {
   private def isPowerOfTwoUpTo15(n: Long): Boolean = if (n <= 0 || n >= 0x8000) false else 0 == ((n-1) & n)
 
   def compileInPlaceWordMultiplication(ctx: CompilationContext, v: LhsExpression, addend: Expression): List[AssemblyLine] = {
-    if (v.isInstanceOf[DerefExpression]) {
-      ctx.log.error("Too complex left-hand-side expression", v.position)
-      return MosExpressionCompiler.compileToAX(ctx, v) ++ MosExpressionCompiler.compileToAX(ctx, addend)
+    v match {
+      case dx: DerefExpression =>
+        val el = if(dx.isVolatile) Elidability.Volatile else Elidability.Elidable
+        // this is ugly, needs a rewrite
+        return handleWordOrLongInPlaceModificationViaDeref(ctx, dx, addend, fromMsb = false){(ptr, reg, offset, r) =>
+          val constR = r match {
+            case List(AssemblyLine0(LDA, Immediate, l), AssemblyLine0(LDX, Immediate, h)) =>
+              h.asl(8).+(l).quickSimplify match {
+                case NumericConstant(n, _) => Some(n.toInt & 0xffff)
+                case _ => None
+              }
+            case _ => None
+          }
+          constR match {
+            case Some(1) => Nil
+            case Some(0) => List(
+              AssemblyLine.immediate(LDA, 0),
+              AssemblyLine.immediate(LDY, offset),
+              AssemblyLine.indexedY(STA, ptr).copy(elidability = el),
+              AssemblyLine.implied(INY),
+              AssemblyLine.indexedY(STA, ptr).copy(elidability = el))
+            case Some(2) => List(
+              AssemblyLine.immediate(LDA, 0),
+              AssemblyLine.immediate(LDY, offset),
+              AssemblyLine.indexedY(LDA, ptr).copy(elidability = el),
+              AssemblyLine.implied(ASL),
+              AssemblyLine.indexedY(STA, ptr).copy(elidability = el),
+              AssemblyLine.implied(INY),
+              AssemblyLine.indexedY(LDA, ptr).copy(elidability = el),
+              AssemblyLine.implied(ROL),
+              AssemblyLine.indexedY(STA, ptr).copy(elidability = el))
+              // TODO: other powers of two
+            case _ if reg.toAddress == ptr => List(
+              AssemblyLine.implied(PHA),
+              AssemblyLine.immediate(LDY, offset),
+              AssemblyLine.indexedY(LDA, reg).copy(elidability = el),
+              AssemblyLine.zeropage(STA, reg, 2),
+              AssemblyLine.implied(INY),
+              AssemblyLine.indexedY(LDA, reg).copy(elidability = el),
+              AssemblyLine.zeropage(STA, reg, 3),
+              AssemblyLine.implied(PLA),
+              AssemblyLine.implied(TAY),
+              AssemblyLine.zeropage(LDA, reg, 1),
+              AssemblyLine.implied(PHA),
+              AssemblyLine.zeropage(LDA, reg),
+              AssemblyLine.implied(PHA),
+              AssemblyLine.zeropage(STY, reg),
+              AssemblyLine.zeropage(STX, reg, 1),
+              AssemblyLine.absolute(JSR, ctx.env.get[ThingInMemory]("__mul_u16u16u16")),
+              AssemblyLine.zeropage(STA, reg, 2),
+              AssemblyLine.implied(PLA),
+              AssemblyLine.zeropage(STA, reg),
+              AssemblyLine.implied(PLA),
+              AssemblyLine.zeropage(STA, reg, 1),
+              AssemblyLine.immediate(LDY, offset),
+              AssemblyLine.zeropage(LDA, reg, 2),
+              AssemblyLine.indexedY(STA, reg).copy(elidability = el),
+              AssemblyLine.implied(INY),
+              AssemblyLine.implied(TXA),
+              AssemblyLine.indexedY(STA, reg).copy(elidability = el),
+            )
+            case _ => List(
+              AssemblyLine.zeropage(STA, reg),
+              AssemblyLine.zeropage(STX, reg, 1),
+              AssemblyLine.immediate(LDY, offset),
+              AssemblyLine.indexedY(LDA, ptr).copy(elidability = el),
+              AssemblyLine.zeropage(STA, reg, 2),
+              AssemblyLine.implied(INY),
+              AssemblyLine.indexedY(LDA, ptr).copy(elidability = el),
+              AssemblyLine.zeropage(STA, reg, 3),
+              AssemblyLine.absolute(JSR, ctx.env.get[ThingInMemory]("__mul_u16u16u16")),
+              AssemblyLine.immediate(LDY, offset),
+              AssemblyLine.indexedY(STA, ptr).copy(elidability = el),
+              AssemblyLine.implied(INY),
+              AssemblyLine.implied(TXA),
+              AssemblyLine.indexedY(STA, ptr).copy(elidability = el),
+            )
+          }
+        }(Left({size => ???}))
+      case _ =>
     }
     val b = ctx.env.get[Type]("byte")
     val w = ctx.env.get[Type]("word")
@@ -1069,7 +1294,7 @@ object BuiltIns {
   def compileByteMultiplication(ctx: CompilationContext, v: Expression, c: Int): List[AssemblyLine] = {
     c match {
       case 0 =>
-        if (v.isPure) return List(AssemblyLine.immediate(LDA, 0))
+        if (ctx.isConstant(v)) return List(AssemblyLine.immediate(LDA, 0))
         else return MosExpressionCompiler.compileToA(ctx, v) ++ List(AssemblyLine.immediate(LDA, 0))
       case 1 => return MosExpressionCompiler.compileToA(ctx, v)
       case 2 | 4 | 8 | 16 | 32 =>
@@ -1086,7 +1311,6 @@ object BuiltIns {
     val adc = addingCode.last
     val indexing = addingCode.init
     result ++= indexing
-    result += AssemblyLine.immediate(LDA, 0)
     val mult = c & 0xff
     var mask = 128
     var empty = true
@@ -1095,8 +1319,12 @@ object BuiltIns {
         result += AssemblyLine.implied(ASL)
       }
       if ((mult & mask) != 0) {
-        result += AssemblyLine.implied(CLC)
-        result += adc
+        if (empty) {
+          result += adc.copy(opcode = LDA)
+        } else {
+          result += AssemblyLine.implied(CLC)
+          result += adc
+        }
         empty = false
       }
 
@@ -1279,7 +1507,7 @@ object BuiltIns {
             AssemblyLine.implied(CLC),
             AssemblyLine.absolute(JSR, ctx.env.get[ThingInMemory]("__adc_decimal"))
           )) ++ storeLhs
-        } else if (!subtract && simplicity(env, v) > simplicity(env, addend)) {
+        } else if (!subtract && simplicity(env, v) >= simplicity(env, addend)) {
           val loadRhs = MosExpressionCompiler.compile(ctx, addend, Some(b -> RegisterVariable(MosRegister.A, b)), NoBranching)
           val modifyAcc = insertBeforeLast(AssemblyLine.implied(CLC), simpleOperation(ADC, ctx, v, IndexChoice.PreferY, preserveA = true, commutative = true, decimal = decimal))
           val storeLhs = MosExpressionCompiler.compileByteStorage(ctx, MosRegister.A, v)
@@ -1301,14 +1529,136 @@ object BuiltIns {
     ctx.env.evalVariableAndConstantSubParts(indexExpr)._1.map(v => MosExpressionCompiler.getExpressionType(ctx, v).size).sum
   }
 
+  @inline
+  private def handleWordOrLongInPlaceModificationViaDeref(ctx: CompilationContext, lhs: DerefExpression, rhs: Expression, fromMsb: Boolean)
+                                                         (wordFooter: (Constant, VariableInMemory, Int, List[AssemblyLine]) => List[AssemblyLine])
+                                                         (eitherDoWholeThingOrMergeByte: Either[(Int) => List[AssemblyLine], (Int, List[AssemblyLine], Boolean) => List[AssemblyLine]]): List[AssemblyLine] = {
+    if (ctx.options.zpRegisterSize < 2) {
+      ctx.log.error("Unsupported operation. Consider increasing the size of the zeropage register.", lhs.position)
+      return MosExpressionCompiler.compileToAX(ctx, lhs) ++ MosExpressionCompiler.compileToAX(ctx, rhs)
+    }
+    val env = ctx.env
+    val targetType = MosExpressionCompiler.getExpressionType(ctx, lhs)
+    val reg = env.get[VariableInMemory]("__reg")
+    if (targetType.size == 2 ) {
+      var l = MosExpressionCompiler.compileToZReg(ctx, lhs.inner)
+      val ptr = l match {
+        case List(AssemblyLine0(LDA, ZeroPage, p), AssemblyLine0(STA, ZeroPage, _), AssemblyLine0(LDA, ZeroPage, q), AssemblyLine0(STA, ZeroPage, _)) if p.succ == q =>
+          l = Nil
+          p
+        case List(AssemblyLine0(LDA, ZeroPage, p), AssemblyLine0(LDX, ZeroPage, q), AssemblyLine0(STA, ZeroPage, _), AssemblyLine0(STX, ZeroPage, _)) if p.succ == q =>
+          l = Nil
+          p
+        case _ =>
+          reg.toAddress
+      }
+      val r = MosExpressionCompiler.compileToAX(ctx, rhs)
+      val s = wordFooter(ptr, reg, lhs.offset, r)
+      if (MosExpressionCompiler.changesZpreg(r, 0) || MosExpressionCompiler.changesZpreg(r, 1)) {
+        r ++ MosExpressionCompiler.preserveRegisterIfNeeded(ctx, MosRegister.AX, l) ++ s
+      } else {
+        l ++ r ++ s
+      }
+    } else {
+      val result = ListBuffer[AssemblyLine]()
+      result ++= MosExpressionCompiler.compileToZReg(ctx, lhs.inner #+# lhs.offset)
+      eitherDoWholeThingOrMergeByte match {
+        case Left(wholeThing) => result ++= wholeThing(targetType.size)
+        case Right(mergeByte) =>
+          val loads = getLoadForEachByte(ctx, rhs, targetType.size).map(x => MosExpressionCompiler.preserve2ZpregIfNeededDestroyingAAndX(ctx, 0, 1, cmpTo(LDA, x)))
+          if (fromMsb) {
+            for(i <- targetType.size.-(1).to(0, -1)) {
+              result ++= mergeByte(i, loads(i), i == targetType.size - 1)
+            }
+          } else {
+            for(i <- 0 until targetType.size) {
+              result ++= mergeByte(i, loads(i), i == targetType.size - 1)
+            }
+          }
+      }
+      result.toList
+    }
+  }
+
   def compileInPlaceWordOrLongAddition(ctx: CompilationContext, lhs: LhsExpression, addend: Expression, subtract: Boolean, decimal: Boolean): List[AssemblyLine] = {
     if (decimal && !ctx.options.flag(CompilationFlag.DecimalMode) && ctx.options.zpRegisterSize < 4) {
       ctx.log.error("Unsupported decimal operation. Consider increasing the size of the zeropage register.", lhs.position)
       return compileInPlaceWordOrLongAddition(ctx, lhs, addend, subtract, decimal = false)
     }
-    if (lhs.isInstanceOf[DerefExpression]) {
-      ctx.log.error("Too complex left-hand-side expression", lhs.position)
-      return MosExpressionCompiler.compileToAX(ctx, lhs) ++ MosExpressionCompiler.compileToAX(ctx, addend)
+    lhs match {
+      case dx: DerefExpression =>
+        val el = if(dx.isVolatile) Elidability.Volatile else Elidability.Elidable
+        if (subtract && ctx.options.zpRegisterSize < 3) {
+          ctx.log.error("Too complex left hand side. Consider increasing the size of the zeropage register.", lhs.position)
+          return compileInPlaceWordOrLongAddition(ctx, lhs, addend, subtract = false, decimal = false)
+        }
+        return if (subtract) handleWordOrLongInPlaceModificationViaDeref(ctx, dx, addend, fromMsb = false)((ptr, reg, offset, _) => wrapInSedCldIfNeeded(decimal, List(
+          AssemblyLine.immediate(LDY, offset),
+          AssemblyLine.implied(SEC),
+          AssemblyLine.zeropage(STA, reg, 2),
+          AssemblyLine.indexedY(LDA, ptr).copy(elidability = el),
+          AssemblyLine.zeropage(SBC, reg, 2),
+          AssemblyLine.indexedY(STA, ptr).copy(elidability = el),
+          AssemblyLine.implied(INY),
+          AssemblyLine.zeropage(STX, reg, 2),
+          AssemblyLine.indexedY(LDA, ptr).copy(elidability = el),
+          AssemblyLine.zeropage(SBC, reg, 2),
+          AssemblyLine.indexedY(STA, ptr).copy(elidability = el),
+        )))(Right({(iy, r, last) =>
+          val reg = ctx.env.get[VariableInMemory]("__reg")
+          val result = ListBuffer[AssemblyLine]()
+          if (iy != 0) {
+            result ++= MosExpressionCompiler.preserveCarryIfNeeded(ctx, r)
+          } else {
+            result ++= r
+          }
+          result += AssemblyLine.immediate(LDY, iy)
+          result += AssemblyLine.zeropage(STA, reg, 2)
+          result += AssemblyLine.indexedY(LDA, reg).copy(elidability = el)
+          if (iy == 0) {
+            result += AssemblyLine.implied(SEC)
+          }
+          if (decimal) {
+            result += AssemblyLine.implied(SED)
+          }
+          result += AssemblyLine.zeropage(SBC, reg, 2)
+          if (decimal) {
+            result += AssemblyLine.implied(CLD)
+          }
+          result += AssemblyLine.indexedY(STA, reg)
+          result.toList
+        })) else handleWordOrLongInPlaceModificationViaDeref(ctx, dx, addend, fromMsb = false)((ptr, _, offset, _) => wrapInSedCldIfNeeded(decimal, List(
+          AssemblyLine.immediate(LDY, offset),
+          AssemblyLine.implied(CLC),
+          AssemblyLine.indexedY(ADC, ptr).copy(elidability = el),
+          AssemblyLine.indexedY(STA, ptr).copy(elidability = el),
+          AssemblyLine.implied(TXA),
+          AssemblyLine.implied(INY),
+          AssemblyLine.indexedY(ADC, ptr).copy(elidability = el),
+          AssemblyLine.indexedY(STA, ptr).copy(elidability = el),
+        )))(Right({(iy, r, last) =>
+          val reg = ctx.env.get[VariableInMemory]("__reg")
+          val result = ListBuffer[AssemblyLine]()
+          if (iy != 0) {
+            result ++= MosExpressionCompiler.preserveCarryIfNeeded(ctx, r)
+          } else {
+            result ++= r
+          }
+          result += AssemblyLine.immediate(LDY, iy)
+          if (iy == 0) {
+            result += AssemblyLine.implied(CLC)
+          }
+          if (decimal) {
+            result += AssemblyLine.implied(SED)
+          }
+          result += AssemblyLine.indexedY(ADC, reg)
+          if (decimal) {
+            result += AssemblyLine.implied(CLD)
+          }
+          result += AssemblyLine.indexedY(STA, reg)
+          result.toList
+        }))
+      case _ =>
     }
     val env = ctx.env
     val b = env.get[Type]("byte")
@@ -1656,9 +2006,25 @@ object BuiltIns {
 
 
   def compileInPlaceWordOrLongBitOp(ctx: CompilationContext, lhs: LhsExpression, param: Expression, operation: Opcode.Value): List[AssemblyLine] = {
-    if (lhs.isInstanceOf[DerefExpression]) {
-      ctx.log.error("Too complex left-hand-side expression", lhs.position)
-      return MosExpressionCompiler.compileToAX(ctx, lhs) ++ MosExpressionCompiler.compileToAX(ctx, param)
+    lhs match {
+      case dx: DerefExpression =>
+        val el = if(dx.isVolatile) Elidability.Volatile else Elidability.Elidable
+        return handleWordOrLongInPlaceModificationViaDeref(ctx, dx, param, fromMsb = false)((ptr, _, offset, _) => List(
+        AssemblyLine.immediate(LDY, offset),
+        AssemblyLine.indexedY(operation, ptr).copy(elidability = el),
+        AssemblyLine.indexedY(STA, ptr).copy(elidability = el),
+        AssemblyLine.implied(TXA),
+        AssemblyLine.implied(INY),
+        AssemblyLine.indexedY(operation, ptr).copy(elidability = el),
+        AssemblyLine.indexedY(STA, ptr).copy(elidability = el),
+      ))(Right({ (iy, r, last) =>
+        val reg = ctx.env.get[VariableInMemory]("__reg")
+        r ++ List(
+                AssemblyLine.immediate(LDY, iy),
+                AssemblyLine.indexedY(operation, reg),
+                AssemblyLine.indexedY(STA, reg))
+      }))
+      case _ =>
     }
     val env = ctx.env
     val b = env.get[Type]("byte")

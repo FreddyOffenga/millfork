@@ -1,7 +1,7 @@
 package millfork.test.emu
 
 import millfork.assembly.m6809.opt.M6809OptimizationPresets
-import millfork.assembly.mos.opt.{LaterOptimizations, ZeropageRegisterOptimizations}
+import millfork.assembly.mos.opt.{LaterOptimizations, NmosOptimizations, ZeropageRegisterOptimizations}
 import millfork.assembly.z80.opt.{AlwaysGoodZ80Optimizations, Z80OptimizationPresets}
 import millfork.{Cpu, OptimizationPresets}
 
@@ -15,8 +15,8 @@ object EmuOptimizedRun extends EmuRun(
     ZeropageRegisterOptimizations.All ++
     OptimizationPresets.Good ++
     OptimizationPresets.Good ++
-    OptimizationPresets.Good ++ LaterOptimizations.Nmos ++
-    OptimizationPresets.Good ++ LaterOptimizations.Nmos ++
+    OptimizationPresets.Good ++ NmosOptimizations.All ++
+    OptimizationPresets.Good ++ NmosOptimizations.All ++
     ZeropageRegisterOptimizations.All ++
     OptimizationPresets.Good ++
     ZeropageRegisterOptimizations.All ++
@@ -25,6 +25,21 @@ object EmuOptimizedRun extends EmuRun(
     OptimizationPresets.Good ++
     OptimizationPresets.Good)
 
+case class EmuOptimizedAccordingToLevelRun(optLevel: Int) extends EmuRun(
+  Cpu.Ricoh,
+  OptimizationPresets.NodeOpt,
+  optLevel match {
+    case 0 => Nil
+    case 1 => OptimizationPresets.QuickPreset
+    case _ =>
+      val goodExtras = ZeropageRegisterOptimizations.All
+      val extras = Nil
+      val goodCycle = List.fill(optLevel - 2)(OptimizationPresets.Good ++ goodExtras).flatten
+      val mainCycle = List.fill(optLevel - 1)(OptimizationPresets.AssOpt ++ extras).flatten
+      goodCycle ++ mainCycle ++ goodCycle
+  }
+)
+
 object EmuSizeOptimizedRun extends EmuRun(
   Cpu.StrictMos,
   OptimizationPresets.NodeOpt,
@@ -32,8 +47,8 @@ object EmuSizeOptimizedRun extends EmuRun(
     ZeropageRegisterOptimizations.All ++
     OptimizationPresets.Good ++
     OptimizationPresets.Good ++
-    OptimizationPresets.Good ++ LaterOptimizations.Nmos ++
-    OptimizationPresets.Good ++ LaterOptimizations.Nmos ++
+    OptimizationPresets.Good ++ NmosOptimizations.All ++
+    OptimizationPresets.Good ++ NmosOptimizations.All ++
     ZeropageRegisterOptimizations.All ++
     OptimizationPresets.Good ++
     ZeropageRegisterOptimizations.All ++
@@ -51,8 +66,8 @@ object EmuOptimizedSoftwareStackRun extends EmuRun(
     ZeropageRegisterOptimizations.All ++
     OptimizationPresets.Good ++
     OptimizationPresets.Good ++
-    OptimizationPresets.Good ++ LaterOptimizations.Nmos ++
-    OptimizationPresets.Good ++ LaterOptimizations.Nmos ++
+    OptimizationPresets.Good ++ NmosOptimizations.All ++
+    OptimizationPresets.Good ++ NmosOptimizations.All ++
     ZeropageRegisterOptimizations.All ++
     OptimizationPresets.Good ++
     ZeropageRegisterOptimizations.All ++
@@ -79,5 +94,7 @@ object EmuSizeOptimizedIntel8080Run extends EmuZ80Run(Cpu.Intel8080, Optimizatio
 }
 
 object EmuOptimizedSharpRun extends EmuZ80Run(Cpu.Sharp, OptimizationPresets.NodeOpt, Z80OptimizationPresets.GoodForSharp)
+
+object EmuOptimizedR800Run extends EmuZ80Run(Cpu.R800, OptimizationPresets.NodeOpt, Z80OptimizationPresets.GoodForR800)
 
 object EmuOptimizedM6809Run extends EmuM6809Run(Cpu.Motorola6809, OptimizationPresets.NodeOpt, M6809OptimizationPresets.Default)

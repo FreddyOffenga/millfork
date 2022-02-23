@@ -1,6 +1,395 @@
 # Change log
 
-## Current version
+## 0.3.30 (2021-12-15)
+
+* Added volatile structure fields (#112).
+
+* Added `this.function` as the alias for the current function (#118).
+
+* Added support for constant evaluation in `file` expressions (#114).
+
+* Allowed declaring local constants and passing untyped parameters for macros.
+
+* Allowed treating bare function name as a pointer to it.
+
+* Added Mesen, ld65 and "raw" label file formats (#128).
+
+* Commodore: the address used by SYS is now determined automatically instead of hardcoded (#111).
+
+* C64: Fixed address for `sid_v1_sr` (#115).
+
+* EasyFlash: Fixed address for `switch_hirom` (#121).
+
+* GB: Fixed standard library (thanks to @retrac0).
+  
+* Commander X16: Updated platform definition file (thanks to @mookiexl).
+
+* 65CE02: Full assembly support.
+
+* R800: Full assembly support.
+
+* Various miscompilation fixes (#123, #125) and parser fixes (e.g. #120).
+
+* 6809: Various optimizations.
+
+* Improvements related to constant evaluation.
+
+## 0.3.28 (2021-05-24)
+
+* Officially deprecated decimal operators with apostrophes.
+
+* Added optimization hints.
+
+* Added `utf32be`, `utf32le`, `cp1253`, `cp1254`, `cp1257`, `geos_de` encodings.
+
+* Allowed for underscores in numeric literals for readability purposes, similar to several other programming languages. 
+
+* Added a warning for comparisons between bytes and pointers (#110).
+
+* Fixed escape sequences in many encodings.
+
+* Fixed and documented absolute module imports (#106)
+  
+* Fixed and optimized sign extension.
+  
+* Fixed optimizations involving unused labels.
+  
+* Fixed pointer types to type aliases.
+
+* Fixed parsing of Intel hex literals of the form `0BH`, `0B0H` etc. 
+
+* 6809: Fixed flow analysis in optimization.
+
+* Optimization of certain bitmask operations.
+
+* Parsing optimizations.
+
+## 0.3.26 (2021-03-01)
+
+* Array fields in structs.
+
+* Various Apple II-related improvements, including ProDOS support (thanks to @retrac0).
+
+* Segment-related constants now match their equivalents from the platform definition. Missing constants have been defined.
+
+* Constants with heap start and segment start are now generated properly.
+
+* Signed multiplication support for `sbyte` and `signed16`.
+
+* Heavily experimental `typeof` builtin.
+
+* Self-modifying assembly code is now supported (#101).
+
+* Successful compilation now prints result program size.
+
+* Warning about data not being included in the output file.
+
+* Warnings can now be enabled and disabled individually.
+
+* Imported modules are now identified by their full relative path, not just the token used in the `import` statement (#89).
+
+* 6502: Fixed sbyte to word promotions in certain contexts.
+
+* 8080: Fixed compilation of sign extension of `sbyte` values into the BC register pair.
+
+* Fixed negative constant folding.
+
+* Fixed optimizations around macro invocations.
+
+* 6502: Fixed code deduplication in presence of trampolined functions.
+
+* Optimized word shifts for between 7 and 12 bits.
+
+* Allowed new lines after `=`.
+
+* Various optimization improvements.
+
+* Improved some error messages (thanks to @agg23).
+
+* Other fixes and improvements.
+
+## 0.3.24 (2020-12-02)
+
+* Preliminary support for TRS-80 Model 1 and 3 running TRS-DOS.
+
+* Preliminary support for Robotron Z1013.
+
+* Allowed defining entry points other than the start of the segment for Atari, ZX Spectrum, CoCo, Z1013 and TRS-80. (#78)
+
+* Allowed the `:` operator in const-pure functions.
+
+* Added `pointer.interrupt` and `pointer.kernal_interrupt` types.
+
+* Implemented `readline` and `readword` for VIC-20.
+
+* `init_rand_seed` uses the POKEY on Atari.
+
+* Useless labels are no longer emitted into the label file.
+
+* VIC-20: added `readline` and `readword`.
+
+* Atari: use POKEY for randomness source.
+
+* New output format elements: ASCII string, program name.
+
+* Fix: Pointers to functions with parameters (#86)/
+
+* Fix: more instances of memset loops should be detected and optimized (#59).
+
+* Fix: things mentioned in the segment layout should not be deleted even if unused.
+
+* Fix: `endaddr+N` output format.
+
+* 65816: some code generation fixes.
+
+* 8080: word negation now works.
+
+* Various optimization improvements.
+
+* Various other fixes.
+
+* Improved some error messages.
+
+* Even more new Atari examples (thanks to @zbyti).
+
+* Build process slightly changed.
+
+## 0.3.22 (2020-09-15)
+
+* Added local labels in assembly.
+
+* Added alternate decimal operators (with `$` instead of `'`).
+
+* **Potentially breaking change!** Identifiers no longer can end with `$`.
+
+* Added `z80next` as an alternate name for the ZX Spectrum Next's processor (#55).
+
+* Added encodings: `brascii`, `macroman`, `dmcs`, `lics`.
+
+* Improved some error messages.
+
+* Fix: interrupt functions written in assembly no longer have the default prologue (#62).
+
+* Fixed the `a8_os` module (#58).
+
+* Fixed evaluation of division of large constants.
+
+* Fix: Structure alignment is now respected for substructures.
+
+* X16: Fixed the address of `vera_dc_hscale_hstop` register (#54) (thanks to @Kobrasadetin).
+
+* Fixed evaluation of more complex boolean expressions (#56).
+
+* Fixed accesses to volatile variables.
+
+* 8080/Z80: Optimization improvements. 
+
+* 6809: Optimization improvements.
+
+* Various Atari improvements (#60, #63, #65) (thanks to @zbyti).
+
+* New Atari examples (thanks to @zbyti).
+
+## 0.3.18 (2020-04-08)
+
+* Support for Motorola 6809 (complete, but still experimental).
+
+* Preliminary support for Tandy Color Computer running RS-DOS.
+
+* Preliminary support for 16K cartridges for Tandy Color Computer.
+
+* Added support for modifying large variables via pointers.
+
+* Added the ability to declare structure alignment.
+
+* `for` loops over arrays.
+
+* Allowed defining custom text encodings.
+**Potentially breaking change!**
+There are no built-in encodings now, the include path needs to contain the necessary encodings.
+
+* Fixed encodings: 
+`apple2`, `atasciiscr`, `iso_de`, `iso_no`, `iso_se`, 
+`koi7n2`, `msx_jp`, 
+`oldpet`, `origpet`,  `petscii`, `petsciijp`, `petscr`, `petscrjp`, 
+`zx80`.
+
+* Added encodings:
+`apple2c`, `apple2e`, `apple2gs`,
+`coco`, `cocoscr`,
+`cpc_da`, `cpc_en`, `cpc_es`, `cpc_fr`,
+`cp437`, `cp850`, `cp851`, `cp852`, `cp855`, `cp858`, `cp866`, 
+`cp1250`, `cp1251`, `cp1252`,
+`ebcdic`,
+`galaksija`,
+`iso8859_1`, `iso8859_2`, `iso8859_3`, `iso8859_4`, `iso8859_5`,
+`iso8859_7`, `iso8859_9`, `iso8859_10`, `iso8859_13`, `iso8859_14`, `iso8859_16`,
+`kamenicky`,
+`koi8e`, `koi8f`, `koi8r`, `koi8ru`, `koi8t`, `koi8u`,
+`mazovia`, `pcw`,
+`pokemon1en`, `pokemon1es`, `pokemon1fr`, `pokemon1jp`.
+
+* Added `ENCODING_NOLOWER` preprocessor feature.
+
+* Fixed raw views of typed pointers.
+
+* Fixed dead code elimination (#51). 
+
+* **Potentially breaking change!** Changed default encoding for CPC to `cpc_en`.
+
+* **Potentially breaking change!** Changed the type of `mouse_lbm` and `mouse_rbm` to `bool`. Added `mouse_mbm`
+
+* **Potentially breaking change!** Renamed the `x_coord` module to `coord`. Added the `y_coord` type and `TALLSCREEN` preprocessor feature.
+
+* Added `pscrstr2word` function.
+
+* Labels with fixed addresses are now exported to the label file (#49).
+
+* Fixed address of the VIC 20 volume register (#52) (thanks to @nippur72).
+
+* Fixed and improved stdlib optimizations.
+
+* Allow importing modules from subdirectories.
+
+* Allow placing platform definitions in a dedicated subdirectory.
+
+* Allow using Batch files with the `-r` option.
+
+* Improved error reporting for constants used before their definitions.
+
+* Improved typo hints.
+
+* Typo hints for non-ASCII characters.
+
+* Z80: Intel syntax for all Z80 instructions, based on Digital Research's Z80.LIB.
+
+* Commander X16: Updated to support VERA 0.9 and the new joystick API. Added mouse support.
+
+* 6502: Optimization improvements:
+
+    * Fixed index register optimization regressions.
+    
+    * Small array optimizations are now available for more operations.
+    
+    * Index calculations for arrays of structs with sizes divisible by an even power of two are now sometimes optimized.
+    
+    * Redundant index calculations are now removed.
+
+## 0.3.16 (2020-04-08)
+
+* Language improvements:
+
+    * Added compile-time evaluation for user-defined functions.
+    
+    * Added `breakpoint` macro (#44).
+
+    * **Potentially breaking change!** Added `min`, `max` and `if` compile-time functions.
+    
+    * Added experimental `signed16` and `unsigned16` types.
+    
+    * Added length-prefixed strings (Pascal strings).  
+    
+    * Improved operator support for word-sized arguments (#24, #25).
+    
+    * **Potentially breaking change!** Various macros improvements, including the requirement of parameter types matching exactly (#23, #39, #40).
+
+* Compiler improvements:
+
+    * 6809 improvements (no full support yet).
+    
+    * Added warnings for calling from one segment to another overlapping one.
+    
+    * 6502: Fixed undocumented mnemonics.
+    
+    * Create output directories when needed (#21).
+    
+    * Allow defining different output formats for different segments when outputting one file per segment.
+    
+    * Fixed multiple optimization bugs (#32, #38, #41, #46 and others) – thanks to @agg23 for detailed bug reports!
+    
+    * 6502: Fix boolean arrays and pointers (#28).
+
+    * Fixed and improved memset-like loops (#47).
+    
+    * Minor improvements to inline assembly.
+    
+    * Improvements to constant evaluation, including more arithmetic operators.
+    
+    * **Potentially breaking change!** Detect overflowing constants, like `const byte x = 256`.
+    
+    * Optimization improvements.
+    
+    * 6502: Memory allocation improvements for pointers.
+    
+    * Support for MkImg (tool for creating BBC Micro disk images) and multiple output files on BBC Micro.
+    
+    * Other minor fixes.
+
+* Library improvements:
+
+    * Added `putsigned16` function.
+    
+    * Added `pstring` module and `putpstr` function.  
+
+    * Various improvements to the C64 libraries (thanks to @bsutherland).
+    
+    * Added detection for various PET variants and implemented `readkey` for PET.
+    
+    * Implemented `readkey` and `readline` for Apple II.
+    
+    * Changed the default load address for BBC Micro.
+
+    * Multiple fixes to the `string`, `scrstring` and `encconv` modules.
+    
+    * Other minor fixes.
+
+* Other changes:
+
+    * Created a pure-Millfork test suite.
+
+    * Updated to Scala 2.12.11.
+
+## 0.3.14 (2019-12-03)
+
+* Full assembly support for HuC6280.
+
+* Improvements to subroutine extraction; it's now much faster, less buggy and actually effective.
+
+* 8080: function parameters can now be optimized to registers.
+
+* Fixed error messages about invalid function flags.
+
+* 6502: Fixed compilation of interrupt routines.
+
+* 65C02: Fixed fatal bugs related to some 65C02 subtypes.
+
+* Other bug fixes.
+
+## 0.3.12 (2019-11-06)
+
+* **Breaking change!**
+The `petscr`, `petscrjp` and `atasciiscr` encodings now use $E0, $E0 and $DB respectively as their string terminator.
+
+* **Potentially breaking change!**
+Changed the identifiers for various subtypes of the 65C02 processors.
+
+* Added `nullchar_scr` and `NULLCHAR_SCR` 
+
+* Added the `scrstring` module
+
+* Added `strz_from_screencode`, `strz_to_screencode`, `strzpaste` and `scrstrzpaste` functions
+
+* Added the ability to convert from booleans to integers
+
+* Fixed the string escape bug
+
+* Unary minus and other parser improvements
+
+* Better error reporting
+
+* Other bugfixes
+
+## 0.3.10 (2019-10-24)
 
 * Preliminary support for the CPU from ZX Spectrum Next.
 
@@ -40,7 +429,7 @@
 
 * Added another NES example (thanks to @Garydos).
 
-## 0.3.8
+## 0.3.8 (2019-06-21)
 
 * `sizeof` now supports arrays.
 
@@ -76,7 +465,7 @@
 
 * 6502: Inlining improvements.
 
-## 0.3.6
+## 0.3.6 (2019-08-05)
 
 * **Breaking change!**
 The `petscii` encoding now uses the $C0-$DE range for uppercase characters instead of $60-$7E.
@@ -138,7 +527,7 @@ This matches both the CC65 behaviour and the return values from `readkey()`.
 
 * Other fixes and improvements.
 
-## 0.3.4
+## 0.3.4 (2019-07-01)
 
 * Preliminary experimental Game Boy support.
 
@@ -235,7 +624,7 @@ can no longer be read before an explicit call to `init_rw_memory`, either add th
 
 * Optimization improvements.
 
-## 0.3.2
+## 0.3.2 (2018-12-28)
 
 * Almost complete support for the Zilog Z80, Intel 8080 and Sharp LR35902 microprocessors.
 
@@ -249,7 +638,7 @@ can no longer be read before an explicit call to `init_rw_memory`, either add th
 
 * Added enumeration types.
 
-* Added preprocessor.
+* Added the preprocessor.
 
 * Added `for` loops over enum types and in-place lists
 
@@ -271,7 +660,7 @@ can no longer be read before an explicit call to `init_rw_memory`, either add th
 
 * Extra `z` at the name of the encoding means that the string is zero-terminated.
 
-* **Potentially breaking change!** No longer allowed to define things with names that are keywords or builtins.
+* **Potentially breaking change!** It's no longer allowed to define things with names that are keywords or builtins.
 
 * **Potentially breaking change!** Curly braces in text literals are now used for escape sequences.
 
@@ -308,7 +697,7 @@ Code that uses a custom platform definitions will cause extra warnings until fix
 
 * Other improvements.
 
-## 0.3.0
+## 0.3.0 (2018-06-25)
 
 * Finally faster than C. 
 
@@ -340,7 +729,7 @@ Code that uses a custom platform definitions will cause extra warnings until fix
 
 * Other improvements.
 
-## 0.2.2
+## 0.2.2 (2018-03-19)
 
 * Allowed adding constant words to variable bytes without the zeropage pseudoregister.
 
@@ -352,7 +741,7 @@ Code that uses a custom platform definitions will cause extra warnings until fix
 
 * Other improvements.
 
-## 0.2
+## 0.2 (2018-03-17)
 
 * **Breaking change!** Renamed `inline` to `macro`.
 
@@ -401,6 +790,6 @@ Detailed flow analysis was slow, broken, hard to maintain, and didn't even help 
 
 * Other improvements.
 
-## 0.1
+## 0.1 (2018-01-24)
 
 * Initial numbered version.

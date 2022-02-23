@@ -317,15 +317,23 @@ object Z80Multiply {
     * Calculate HL = l * r
     */
   def compile16BitMultiplyToHL(ctx: CompilationContext, l: Expression, r: Expression): List[ZLine] = {
-    (AbstractExpressionCompiler.getExpressionType(ctx, l).size,
-      AbstractExpressionCompiler.getExpressionType(ctx, r).size) match {
+    val lType = AbstractExpressionCompiler.getExpressionType(ctx, l)
+    val rType = AbstractExpressionCompiler.getExpressionType(ctx, r)
+    (lType.size, rType.size) match {
       case (2, 2) => return compile16x16BitMultiplyToHL(ctx, l, r)
       case (1, 2) => return compile16BitMultiplyToHL(ctx, r, l)
-      case (2 | 1, 1) => // ok
+      case (2, 1) => if (rType.isSigned) return compile16x16BitMultiplyToHL(ctx, l, r)
+      case (1, 1) => // ok
       case _ => ctx.log.fatal("Invalid code path", l.position)
     }
-    ctx.env.eval(r) match {
-      case Some(c) =>
+    (ctx.env.eval(l), ctx.env.eval(r)) match {
+      case (Some(p), Some(q)) =>
+        List(ZLine.ldImm16(ZRegister.HL, CompoundConstant(MathOperator.Times, p, q).quickSimplify))
+      case (Some(NumericConstant(c, _)), _) if isPowerOfTwoUpTo15(c) =>
+        Z80ExpressionCompiler.compileToHL(ctx, l) ++ List.fill(Integer.numberOfTrailingZeros(c.toInt))(ZLine.registers(ZOpcode.ADD_16, ZRegister.HL, ZRegister.HL))
+      case (_, Some(NumericConstant(c, _))) if isPowerOfTwoUpTo15(c) =>
+        Z80ExpressionCompiler.compileToHL(ctx, l) ++ List.fill(Integer.numberOfTrailingZeros(c.toInt))(ZLine.registers(ZOpcode.ADD_16, ZRegister.HL, ZRegister.HL))
+      case (_, Some(c)) =>
         Z80ExpressionCompiler.compileToDE(ctx, l) ++ List(ZLine.ldImm8(ZRegister.A, c)) ++ multiplication16And8(ctx)
       case _ =>
         val lw = Z80ExpressionCompiler.compileToDE(ctx, l)

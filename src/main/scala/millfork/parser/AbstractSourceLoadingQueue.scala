@@ -25,13 +25,17 @@ abstract class AbstractSourceLoadingQueue[T](val initialFilenames: List[String],
 
   def pseudoModules: List[DeclarationStatement] = {
     val encodingConversionAliases = (options.platform.defaultCodec.name, options.platform.screenCodec.name) match {
-      case (TextCodec.Petscii.name, TextCodec.CbmScreencodes.name) |
-           (TextCodec.PetsciiJp.name, TextCodec.CbmScreencodesJp.name)=>
+        // TODO: don't rely on names!
+      case ("PETSCII", "CBM-Screen") |
+           ("PETSCII-JP", "CBM-Screen-JP") =>
         List(AliasDefinitionStatement("__from_screencode", "petscr_to_petscii", important = false),
           AliasDefinitionStatement("__to_screencode", "petscii_to_petscr", important = false))
-      case (TextCodec.Atascii.name, TextCodec.AtasciiScreencodes.name)=>
+      case ("ATASCII", "ATASCII-Screen") =>
         List(AliasDefinitionStatement("__from_screencode", "atasciiscr_to_atascii", important = false),
           AliasDefinitionStatement("__to_screencode", "atascii_to_atasciiscr", important = false))
+      case ("Color-Computer", "Color-Computer-Screen") =>
+        List(AliasDefinitionStatement("__from_screencode", "cocoscr_to_coco", important = false),
+          AliasDefinitionStatement("__to_screencode", "coco_to_cocoscr", important = false))
       case _ => Nil
     }
     encodingConversionAliases
@@ -56,10 +60,10 @@ abstract class AbstractSourceLoadingQueue[T](val initialFilenames: List[String],
       moduleDependecies += standardModules(later) -> standardModules(earlier)
     }
     initialFilenames.foreach { i =>
-      parseModule(extractName(i), includePath, Right(i))
+      parseModule(extractName(i), i, Nil)
     }
     options.platform.startingModules.foreach {m =>
-      moduleQueue.enqueue(() => parseModule(m, includePath, Left(None)))
+      moduleQueue.enqueue(() => parseDefaultModule(m))
     }
     enqueueStandardModules()
     while (moduleQueue.nonEmpty) {
@@ -75,30 +79,51 @@ abstract class AbstractSourceLoadingQueue[T](val initialFilenames: List[String],
     compilationOrder.filter(parsedModules.contains).map(parsedModules).reduce(_ + _).applyImportantAliases
   }
 
-  def lookupModuleFile(includePath: List[String], moduleName: String, position: Option[Position]): String = {
-    includePath.foreach { dir =>
-      val file = Paths.get(dir, moduleName + extension).toFile
+  def lookupModuleNameAndFile(
+                               relativeIncludePath: List[String],
+                               loaderModuleParent: String,
+                               moduleAbbrImportName: String,
+                               importStatementPosition: Option[Position]): (String, String) = {
+    relativeIncludePath.foreach { dir =>
+      val file = Paths.get(dir, moduleAbbrImportName + extension).toFile
       options.log.debug("Checking " + file)
       if (file.exists()) {
-        return file.getAbsolutePath
+        return (loaderModuleParent + moduleAbbrImportName) -> file.getAbsolutePath
       }
     }
-    options.log.fatal(s"Module `$moduleName` not found", position)
+    includePath.foreach { dir =>
+      val file = Paths.get(dir, moduleAbbrImportName + extension).toFile
+      options.log.debug("Checking " + file)
+      if (file.exists()) {
+        return moduleAbbrImportName -> file.getAbsolutePath
+      }
+    }
+    options.log.fatal(s"Module `$moduleAbbrImportName` not found", importStatementPosition)
   }
 
   def supportedPragmas: Set[String]
 
   def createParser(filename: String, src: String, parentDir: String, featureConstants: Map[String, Long], pragmas: Set[String]) : MfParser[T]
 
-  def parseModule(moduleName: String, includePath: List[String], why: Either[Option[Position], String]): Unit = {
-    val filename: String = why.fold(p => lookupModuleFile(includePath, moduleName, p), s => s)
+  def fullModuleName(moduleNameBase: String, templateParams: List[String]): String = {
+    if (templateParams.isEmpty) moduleNameBase else moduleNameBase + templateParams.mkString("<", ",", ">")
+  }
+
+  def parseDefaultModule(moduleName: String): Unit = {
+    var (_, filename) = lookupModuleNameAndFile(Nil, "", moduleName, None)
+    parseModule(moduleName, filename, Nil)
+  }
+
+  def parseModule(moduleName: String,
+                  filename: String,
+                  templateParams: List[String]): Unit = {
     options.log.debug(s"Parsing $filename")
     val path = Paths.get(filename)
     val parentDir = path.toFile.getAbsoluteFile.getParent
     val shortFileName = path.getFileName.toString
-    val PreprocessingResult(src, featureConstants, pragmas) = Preprocessor(options, shortFileName, Files.readAllLines(path, StandardCharsets.UTF_8).toIndexedSeq)
+    val PreprocessingResult(src, featureConstants, pragmas) = Preprocessor(options, shortFileName, Files.readAllLines(path, StandardCharsets.UTF_8).toIndexedSeq, templateParams)
     for (pragma <- pragmas) {
-      if (!supportedPragmas(pragma._1)) {
+      if (!supportedPragmas(pragma._1) && options.flag(CompilationFlag.BuggyCodeWarning)) {
         options.log.warn(s"Unsupported pragma: #pragma ${pragma._1}", Some(Position(moduleName, pragma._2, 1, 0)))
       }
     }
@@ -108,12 +133,13 @@ abstract class AbstractSourceLoadingQueue[T](val initialFilenames: List[String],
     parser.toAst match {
       case Success(prog, _) =>
         parsedModules.synchronized {
-          parsedModules.put(moduleName, prog)
+          parsedModules.put(fullModuleName(moduleName, templateParams), prog)
           prog.declarations.foreach {
-            case s@ImportStatement(m) =>
+            case s@ImportStatement(m, ps) =>
+              var (importedModuleName, importedModuleFilename) = lookupModuleNameAndFile(List(parentDir), extractModuleParent(moduleName), m, s.position)
               moduleDependecies += moduleName -> m
-              if (!parsedModules.contains(m)) {
-                moduleQueue.enqueue(() => parseModule(m, parentDir :: includePath, Left(s.position)))
+              if (!parsedModules.contains(fullModuleName(m, ps))) {
+                moduleQueue.enqueue(() => parseModule(importedModuleName, importedModuleFilename, ps))
               }
             case _ => ()
           }
@@ -128,8 +154,13 @@ abstract class AbstractSourceLoadingQueue[T](val initialFilenames: List[String],
     }
   }
 
-  def extractName(i: String): String = {
-    val noExt = i.stripSuffix(extension)
+  def extractModuleParent(moduleName: String): String = {
+    val lastSlash = moduleName.lastIndexOf('/')
+    if (lastSlash >= 0) moduleName.substring(0, lastSlash + 1) else ""
+  }
+
+  def extractName(fileName: String): String = {
+    val noExt = fileName.stripSuffix(extension)
     val lastSlash = noExt.lastIndexOf('/') max noExt.lastIndexOf('\\')
     if (lastSlash >= 0) noExt.substring(lastSlash + 1) else noExt
   }

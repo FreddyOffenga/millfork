@@ -2,10 +2,10 @@
 
 # Millfork
 
-A middle-level programming language targeting 6502-based, 8080-based and Z80-based microcomputers. 
+A middle-level programming language targeting 6502-based, 8080-based, Z80-based and 6809-based microcomputers. 
 
 For binary releases, see: [https://github.com/KarolS/millfork/releases](https://github.com/KarolS/millfork/releases)
-(latest: 0.3.8).  
+(latest: 0.3.30).  
 For build instructions, see [Build instructions](./COMPILING.md).
 
 ## Features
@@ -22,11 +22,13 @@ For build instructions, see [Build instructions](./COMPILING.md).
     
     * other 6502-based machines: Famicom/NES, Atari Lynx, Atari 8-bit computers, BBC Micro, Apple II+/IIe/Enhanced IIe, Atari 2600 (experimental), Commander X16 (experimental)
     
-    * Z80-based machines: ZX Spectrum 48k, NEC PC-88, Amstrad CPC, MSX
+    * Z80-based machines: ZX Spectrum 48k, NEC PC-88, Amstrad CPC, MSX, TRS-80 Model 1 and 3, Robotron Z1013
     
     * CP/M
     
     * Game Boy (experimental)
+    
+    * Tandy Color Computer (experimental)
     
     * MS-DOS (very experimental, via 8080-to-8086 translation)
 
@@ -34,7 +36,7 @@ For build instructions, see [Build instructions](./COMPILING.md).
 
     * well supported: MOS 6502, Ricoh 2A03/2A07, WDC 65C02, Intel 8080, Intel 8085, Zilog Z80
     
-    * reasonably well supported: Sharp LR35902, CSG 65CE02
+    * reasonably well supported: Sharp LR35902, CSG 65CE02, Motorola 6809
     
     * partially supported: Hudson Soft HuC6280, WDC 65816, Intel 8086
 

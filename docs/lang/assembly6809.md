@@ -14,7 +14,7 @@ There are two ways to include raw assembly code in your Millfork programs:
 
 Millfork inline assembly uses the same three-letter opcodes as most other 6809 assemblers.
 
-Labels have to be followed by a colon and they can optionally be on a separate line.
+Labels have to be followed by a colon, and they can optionally be on a separate line.
 Indentation is not important:
 
     first:  INC a
@@ -23,9 +23,20 @@ Indentation is not important:
     INC c
 
 
-Label names have to start with a letter and can contain digits, underscores and letters.
-This means than they cannot start with a period like in many other assemblers.
-Similarly, anonymous labels designated with `+` or `-` are also not supported.
+Global label names have to start with a letter and can contain digits, underscores and letters.
+Local label names (available since Millfork 0.3.22) start with a period and are visible only in the given function.
+Anonymous labels designated with `+` or `-` are also not supported.
+
+Referring to a global label with an offset requires wrapping it in `label(…)`:
+
+    STA .local_opcode              // ok
+    STA label(.local_opcode)       // ok
+    STA .local_opcode + 1          // ok
+    STA label(.local_opcode) + 1   // ok
+    STA global_opcode              // ok
+    STA label(global_opcode)       // ok
+    STA global_opcode + 1          // NOT OK
+    STA label(global_opcode) + 1   // ok
 
 Assembly can refer to variables and constants defined in Millfork,
 but you need to be careful with using absolute vs immediate addressing:
@@ -42,9 +53,17 @@ but you need to be careful with using absolute vs immediate addressing:
         }
         return result
     }
+    
+To use the direct addressing mode, prepend the argument with `<`:
+
+    CLR <$6f  // clears the byte $6f in the direct page
+    CLR $6f   // clears the byte $006f (absolute address!)
+
+You can use `>` do signify the absolute addressing mode, but it is never necessary.
+This option exists only for compatibility with other assemblers.
 
 Any assembly opcode can be prefixed with `?`, which allows the optimizer change it or elide it if needed.
-Opcodes without that prefix will be always compiled as written.
+Opcodes without that prefix will always be compiled as written.
 
 The '!' prefix marks the statement as volatile, which means it will be a subject to certain, but not all optimizations,
 in order to preserve its semantics.
@@ -119,6 +138,8 @@ Non-macro functions can only have their parameters passed via registers:
 * `byte a`, `byte b`: a single byte passed via the given CPU register; any 1-byte type can be used
 
 * `word d`, `word x`, `word y`: a 2-byte word byte passed via given 16-bit register; any 2-byte type can be used
+
+* the above, but written more explicitly: `byte register(a) paramname`, `byte register(b) paramname`, `word register(x) paramname` etc.
 
 Parameters passed via other registers (`U`, `S` etc.) or combinations of registers do not work yet.
 

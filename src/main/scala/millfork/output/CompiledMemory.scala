@@ -1,17 +1,28 @@
 package millfork.output
 
+import millfork.error.Logger
+
 import scala.collection.mutable
 
 /**
   * @author Karol Stasiak
   */
-class CompiledMemory(bankNames: List[(String, Int)], bankFills: Map[String, Int], bigEndian: Boolean) {
+class CompiledMemory(bankNames: List[(String, Int)], bankFills: Map[String, Int], bigEndian: Boolean, labels: mutable.Map[String, (String, Int)], log: Logger) {
   var programName = "MILLFORK"
   val banks: mutable.Map[String, MemoryBank] = mutable.Map(bankNames.map{p =>
     val bank = new MemoryBank(p._2, bigEndian)
     bank.fill(bankFills.getOrElse(p._1, 0))
     p._1 -> bank
   }: _*)
+
+  def getAddress(symbol: String): Int = {
+    if (labels.contains(symbol)) {
+      labels(symbol)._2
+    } else {
+      log.error(s"Symbol `$symbol` (used in the output format) is not defined")
+      0
+    }
+  }
 }
 
 class MemoryBank(val index: Int, val isBigEndian: Boolean) {
@@ -34,6 +45,10 @@ class MemoryBank(val index: Int, val isBigEndian: Boolean) {
     if (isBigEndian) readByte(addr + 3) + (readByte(addr + 2) << 8) + (readByte(addr + 1) << 16) + (readByte(addr) << 24)
     else readByte(addr) + (readByte(addr + 1) << 8) + (readByte(addr + 2) << 16) + (readByte(addr + 3) << 24)
 
+  def readLongLong(addr: Int): Long =
+    if (isBigEndian) readLong(addr).toLong.<<(32) + readLong(addr + 4).&(1L.<<(32).-(1))
+    else readLong(addr + 4).toLong.<<(32) + readLong(addr).&(1L.<<(32).-(1))
+
   def readWord(addrHi: Int, addrLo: Int): Int = readByte(addrLo) + (readByte(addrHi) << 8)
 
   val output: Array[Byte] = Array.fill[Byte](1 << 16)(0)
@@ -41,8 +56,13 @@ class MemoryBank(val index: Int, val isBigEndian: Boolean) {
   val initialized: Array[Boolean] = Array.fill(1 << 16)(false)
   val readable: Array[Boolean] = Array.fill(1 << 16)(false)
   val writeable: Array[Boolean] = Array.fill(1 << 16)(false)
+  val outputted: Array[Boolean] = Array.fill(1 << 16)(false)
   var start: Int = 0
   var end: Int = 0
+
+  def markAsOutputted(start: Int, pastEnd: Int): Unit = for (i <- start until pastEnd) outputted(i) = true
+
+  def initializedNotOutputted: Seq[Int] = (0 until 0x10000).filter(i => initialized(i) && !outputted(i))
 
   def dump(startAddr: Int, count: Int)(dumper: String => Any): Unit = {
     (0 until count).map(i => (i + startAddr) -> output(i + startAddr)).grouped(16).zipWithIndex.map { case (c, i) => f"${c.head._1}%04X: " + c.map(i => f"${i._2}%02x").mkString(" ") }.foreach(dumper)

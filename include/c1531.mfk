@@ -18,7 +18,7 @@ sbyte _c1531_calculate_delta (byte old, byte new) {
 	return mouse_delta
 }
 
-byte _c1531_handle_x() {
+void _c1531_handle_x() {
     static byte _c1531_old_pot_x
     sbyte mouse_delta
     byte new_pot_x
@@ -39,7 +39,7 @@ byte _c1531_handle_x() {
 	}
 }
 
-byte _c1531_handle_y() {
+void _c1531_handle_y() {
     static byte _c1531_old_pot_y
     byte new_pot_y
     sbyte mouse_delta
@@ -64,6 +64,9 @@ void c1531_mouse () {
     byte value
 	poke($dc03, 0)
 	value = peek($dc01)
-	mouse_rbm = (value & 1) ^ 1
-	if value & 16 == 0 { mouse_lbm = 1 } else { mouse_lbm = 0}
+	mouse_rbm = bool((value & 1) ^ 1)
+	mouse_lbm = value & 16 == 0
+#if USE_MOUSE_MBM
+	mouse_mbm = false
+#endif
 }

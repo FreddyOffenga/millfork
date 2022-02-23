@@ -2,7 +2,7 @@ package millfork.assembly.m6809.opt
 
 import millfork.{CompilationFlag, CompilationOptions}
 import millfork.assembly._
-import millfork.assembly.m6809.{Absolute, Immediate, Inherent, InherentA, InherentB, LongRelative, MAddrMode, MLine, MLine0, MOpcode, MState, Relative, TwoRegisters}
+import millfork.assembly.m6809.{Absolute, DAccumulatorIndexed, Immediate, Indexed, Inherent, InherentA, InherentB, LongRelative, MAddrMode, MLine, MLine0, MOpcode, MState, NonExistent, PostIncremented, PreDecremented, Relative, TwoRegisters}
 import millfork.assembly.opt.SingleStatus
 import millfork.compiler.LabelGenerator
 import millfork.env._
@@ -30,7 +30,7 @@ object FlowInfoRequirement extends Enumeration {
   }
 
   def assertLabels(x: FlowInfoRequirement.Value): Unit = x match {
-    case NoRequirement => FatalErrorReporting.reportFlyingPig("Backward flow info required")
+    case NoRequirement => FatalErrorReporting.reportFlyingPig("Label info required")
     case _ => ()
   }
 }
@@ -43,29 +43,30 @@ class RuleBasedAssemblyOptimization(val name: String, val needsFlowInfo: FlowInf
 
   private val actualRules = rules.flatMap(_.flatten)
   actualRules.foreach(_.pattern.validate(needsFlowInfo))
+  private val actualRulesWithIndex = actualRules.zipWithIndex
 
 
   override def optimize(f: NormalFunction, code: List[MLine], optimizationContext: OptimizationContext): List[MLine] = {
     val taggedCode = FlowAnalyzer.analyze(f, code, optimizationContext, needsFlowInfo)
-    val (changed, optimized) = optimizeImpl(f, taggedCode, optimizationContext)
-    if (changed) optimized else code
+    optimizeImpl(f, code, taggedCode, optimizationContext)
   }
 
-  def optimizeImpl(f: NormalFunction, code: List[(FlowInfo, MLine)], optimizationContext: OptimizationContext): (Boolean, List[MLine]) = {
+  final def optimizeImpl(f: NormalFunction, code: List[MLine], taggedCode: List[(FlowInfo, MLine)], optimizationContext: OptimizationContext): List[MLine] = {
     val log = optimizationContext.log
-    code match {
-      case Nil => false -> Nil
+    taggedCode match {
+      case Nil => code
       case head :: tail =>
-        for ((rule, index) <- actualRules.zipWithIndex) {
+        for ((rule, index) <- actualRulesWithIndex) {
           val ctx = new AssemblyMatchingContext(
             optimizationContext.options,
             optimizationContext.labelMap,
             optimizationContext.niceFunctionProperties,
             head._1.labelUseCount(_)
           )
-          rule.pattern.matchTo(ctx, code) match {
+          rule.pattern.matchTo(ctx, taggedCode) match {
             case Some(rest: List[(FlowInfo, MLine)]) =>
-              val matchedChunkToOptimize: List[MLine] = code.take(code.length - rest.length).map(_._2)
+              val optimizedChunkLengthBefore = taggedCode.length - rest.length
+              val (matchedChunkToOptimize, restOfCode) = code.splitAt(optimizedChunkLengthBefore)
               val optimizedChunk: List[MLine] = rule.result(matchedChunkToOptimize, ctx)
               val optimizedChunkWithSource =
                 if (!ctx.compilationOptions.flag(CompilationFlag.LineNumbersInAssembly)) optimizedChunk
@@ -74,34 +75,40 @@ class RuleBasedAssemblyOptimization(val name: String, val needsFlowInfo: FlowInf
                 else if (optimizedChunk.size == 1) optimizedChunk.map(_.pos(SourceLine.merge(matchedChunkToOptimize.map(_.source))))
                 else if (matchedChunkToOptimize.flatMap(_.source).toSet.size == 1) optimizedChunk.map(_.pos(SourceLine.merge(matchedChunkToOptimize.map(_.source))))
                 else optimizedChunk
-              log.debug(s"Applied $name ($index)")
-              if (needsFlowInfo != FlowInfoRequirement.NoRequirement) {
-                val before = code.head._1.statusBefore
-                val after = code(matchedChunkToOptimize.length - 1)._1.importanceAfter
-                log.trace(s"Before: $before")
-                log.trace(s"After:  $after")
+              if (log.debugEnabled) {
+                log.debug(s"Applied $name ($index)")
               }
               if (log.traceEnabled) {
+                if (needsFlowInfo != FlowInfoRequirement.NoRequirement) {
+                  val before = head._1.statusBefore
+                  val after = taggedCode(matchedChunkToOptimize.length - 1)._1.importanceAfter
+                  log.trace(s"Before: $before")
+                  log.trace(s"After:  $after")
+                }
                 matchedChunkToOptimize.filter(_.isPrintable).foreach(l => log.trace(l.toString))
                 log.trace("     ↓")
                 optimizedChunkWithSource.filter(_.isPrintable).foreach(l => log.trace(l.toString))
               }
               if (needsFlowInfo != FlowInfoRequirement.NoRequirement) {
-                return true -> (optimizedChunkWithSource ++ optimizeImpl(f, rest, optimizationContext)._2)
+                return optimizedChunkWithSource ++ optimizeImpl(f, restOfCode, rest, optimizationContext)
               } else {
-                return true -> optimize(f, optimizedChunkWithSource ++ rest.map(_._2), optimizationContext)
+                return optimize(f, optimizedChunkWithSource ++ restOfCode, optimizationContext)
               }
             case None => ()
           }
         }
-        val (changedTail, optimizedTail) = optimizeImpl(f, tail, optimizationContext)
-        (changedTail, head._2 :: optimizedTail)
+        val optimizedTail = optimizeImpl(f, code.tail, tail, optimizationContext)
+        if (optimizedTail eq code.tail) {
+          code
+        } else {
+          code.head :: optimizedTail
+        }
     }
   }
 }
 
 class AssemblyMatchingContext(val compilationOptions: CompilationOptions,
-                              val labelMap: Map[String, (Int, Int)],
+                              val labelMap: Map[String, (String, Int)],
                               val niceFunctionProperties: Set[(NiceFunctionProperty, String)],
                               val labelUseCount: String => Int) {
   @inline
@@ -989,6 +996,25 @@ case class DoesntChangeMemoryAtAssumingNonchangingIndices(addrMode1: Int, param1
   override def hitRate: Double = 0.973
 }
 
+case class DoesntChangeIndexingInAddrMode(i: Int) extends MLinePattern {
+  override def matchLineTo(ctx: AssemblyMatchingContext, flowInfo: FlowInfo, line: MLine): Boolean = {
+    import M6809Register._
+    ctx.get[MAddrMode](i) match {
+      case Indexed(S, false) => !ConcernsS.matchLineTo(ctx, flowInfo, line)
+      case Indexed(X, false) => !ChangesX.matchLineTo(ctx, flowInfo, line)
+      case Indexed(Y, false) => !ChangesY.matchLineTo(ctx, flowInfo, line)
+      case Absolute(true) => !ChangesMemory.matchLineTo(ctx, flowInfo, line)
+      case Absolute(false) | Inherent | InherentA | InherentB | Immediate => true
+      case _ => false // let's ignore rarer addressing modes
+    }
+  }
+
+  override def toString: String = s"¬(?<$i>AddrMode)"
+
+  override def hitRate: Double = 0.99
+}
+
+
 case object ConcernsMemory extends MLinePattern {
   override def matchLineTo(ctx: AssemblyMatchingContext, flowInfo: FlowInfo, line: MLine): Boolean =
     ReadsMemory.matchLineTo(ctx, flowInfo, line) || ChangesMemory.matchLineTo(ctx, flowInfo, line)
@@ -1049,6 +1075,39 @@ case class HasAddrMode(am: MAddrMode) extends TrivialMLinePattern {
   override def toString: String = am.toString
 
   override def hitRate: Double = 0.295
+}
+
+case class IsTfr(s: M6809Register.Value, t: M6809Register.Value) extends TrivialMLinePattern {
+  override def apply(line: MLine): Boolean =
+    line.opcode == MOpcode.TFR && line.addrMode == TwoRegisters(s, t)
+
+  override def toString: String = s"(TFR $s,$t)"
+
+  override def hitRate: Double = 0.006
+}
+
+case class IsTfrFrom(s: M6809Register.Value) extends TrivialMLinePattern {
+  override def apply(line: MLine): Boolean =
+    line.opcode == MOpcode.TFR && (line.addrMode match {
+      case TwoRegisters(s1, _) => s == s1
+      case _ => false
+    })
+
+  override def toString: String = s"(TFR $s,_)"
+
+  override def hitRate: Double = 0.006
+}
+
+case class IsTfrTo(t: M6809Register.Value) extends TrivialMLinePattern {
+  override def apply(line: MLine): Boolean =
+    line.opcode == MOpcode.TFR && (line.addrMode match {
+      case TwoRegisters(_, t1) => t == t1
+      case _ => false
+    })
+
+  override def toString: String = s"(TFR _,$t)"
+
+  override def hitRate: Double = 0.006
 }
 
 case class HasAddrModeIn(ams: Set[MAddrMode]) extends TrivialMLinePattern {
@@ -1237,4 +1296,15 @@ case object IsNotALabelUsedManyTimes extends MLinePattern {
   }
 
   override def hitRate: Double = 0.92 // ?
+}
+
+
+object ParameterIsLocalLabel extends MLinePattern {
+  override def matchLineTo(ctx: AssemblyMatchingContext, flowInfo: FlowInfo, line: MLine): Boolean =
+    line match {
+      case MLine0(MOpcode.LABEL, _, MemoryAddressConstant(Label(l))) => l.startsWith(".")
+      case _ => false
+    }
+
+  override def hitRate: Double = 0.056
 }

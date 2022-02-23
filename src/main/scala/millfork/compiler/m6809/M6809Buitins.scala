@@ -27,7 +27,7 @@ object M6809Buitins {
         lc ++ List(ldr.copy(opcode = opcode), lc.last.copy(opcode = STB))
       case _ if lc.last.opcode == LDB =>
         // TODO: preserve X?
-        lc ++ List(MLine.pp(PSHS, M6809Register.B)) ++ rc ++ List(MLine.accessAndPullS(opcode), lc.last.copy(opcode = STB))
+        rc ++ List(MLine.pp(PSHS, M6809Register.B)) ++ lc ++ List(MLine.accessAndPullS(opcode), lc.last.copy(opcode = STB))
       case _ =>
         println(lc)
         ???
@@ -49,6 +49,27 @@ object M6809Buitins {
         // TODO: preserve X?
         rc ++ List(MLine.pp(PSHS, M6809Register.D)) ++ lc ++ List(MLine.accessAndPullSTwice(opcode), lc.last.copy(opcode = STD))
       case _ =>
+        rc ++ List(MLine.pp(PSHS, M6809Register.D)) ++ lc ++ List(MLine.accessAndPullSTwice(opcode)) ++ M6809ExpressionCompiler.storeD(ctx, l)
+    }
+  }
+
+  def perform16BitInPlace(ctx: CompilationContext, l: LhsExpression, r: Expression, opcodeA: MOpcode.Value, opcodeB: MOpcode.Value, commutative: Boolean): List[MLine] = {
+    val lc = M6809ExpressionCompiler.compileToD(ctx, l)
+    val rc = M6809ExpressionCompiler.compileToD(ctx, r)
+    (lc, rc) match {
+      case (List(ldl@MLine0(LDD, Absolute(false), _)), _) =>
+        rc ++ List(ldl.copy(opcode = opcodeA), ldl.copy(opcode = opcodeB, parameter = ldl.parameter + 1), ldl.copy(opcode = STD))
+      case (_, List(ldr@MLine0(LDD, Absolute(false), _))) if lc.last.opcode == LDD =>
+        lc ++ List(ldr.copy(opcode = opcodeA), ldr.copy(opcode = opcodeB, parameter = ldr.parameter + 1), lc.last.copy(opcode = STD))
+      case (_, List(ldr@MLine0(LDD, Immediate, _))) if lc.last.opcode == LDD =>
+        lc ++ List(ldr.copy(opcode = opcodeA, parameter = ldr.parameter.hiByte), ldr.copy(opcode = opcodeB, parameter = ldr.parameter.loByte), lc.last.copy(opcode = STD))
+      case _ if lc.last.opcode == LDD && commutative =>
+        // TODO: preserve X?
+        lc ++ List(MLine.pp(PSHS, M6809Register.D)) ++ rc ++ List(MLine.accessAndPullS(opcodeA), MLine.accessAndPullS(opcodeB), lc.last.copy(opcode = STD))
+      case _ if lc.last.opcode == LDD =>
+        // TODO: preserve X?
+        rc ++ List(MLine.pp(PSHS, M6809Register.D)) ++ lc ++ List(MLine.accessAndPullS(opcodeA), MLine.accessAndPullS(opcodeB), lc.last.copy(opcode = STD))
+      case _ =>
         println(lc)
         ???
     }
@@ -66,7 +87,7 @@ object M6809Buitins {
               case (false, false) => MathOperator.Plus
               case (true, false) => MathOperator.Minus
               case (false, true) => MathOperator.DecimalPlus
-              case (false, true) => MathOperator.DecimalMinus
+              case (true, true) => MathOperator.DecimalMinus
             },
             constant, c
           ).quickSimplify
@@ -111,27 +132,51 @@ object M6809Buitins {
     val result = ListBuffer[MLine]()
     for ((neg, load) <- addendReads) {
       if (result.isEmpty && fromScratch) {
-        result ++= load
-        if (neg) result += MLine.inherentB(NEG)
+        if (expr.decimal) {
+          if (load.nonEmpty && load.last.opcode == LDB) {
+            result ++= load.init
+            result += load.last.copy(opcode = LDA)
+          } else {
+            result ++= load
+            result += MLine.tfr(M6809Register.B, M6809Register.A)
+          }
+          if (neg) ???
+        } else {
+          result ++= load
+          if (neg) result += MLine.inherentB(NEG)
+        }
       } else {
         load match {
           case List(l@MLine0(LDB, _, _)) =>
             if (neg) {
-              result += l.copy(opcode = sub)
-              if (expr.decimal) ???
+              if (expr.decimal) {
+                result += MLine.pp(PSHS, M6809Register.A)
+                result += MLine.immediate(LDA, 0x9a)
+                result += l.copy(opcode = SUBA)
+                result += MLine.accessAndPullS(ADDA)
+                result += MLine.inherent(DAA)
+              } else {
+                result += l.copy(opcode = sub)
+              }
             } else {
               result += l.copy(opcode = add)
               if (expr.decimal) result += MLine.inherent(DAA)
             }
           case _ =>
             if (expr.decimal) {
-              result += MLine.pp(PSHS, M6809Register.A)
-              result ++= load
-              result += MLine.pp(PULS, M6809Register.A)
               if (neg) {
-                ???
-                if (expr.decimal) ???
+                result += MLine.pp(PSHS, M6809Register.A)
+                result ++= load
+                result += MLine.pp(PSHS, M6809Register.B)
+                result += MLine.immediate(LDA, 0x9a)
+                result += MLine.accessAndPullS(SUBA)
+                result += MLine.accessAndPullS(ADDA)
+                result += MLine.inherent(DAA)
               } else {
+                result += MLine.pp(PSHS, M6809Register.A)
+                result ++= load
+                result += MLine.pp(PULS, M6809Register.A)
+                result += MLine.pp(PSHS, M6809Register.B)
                 result += MLine.accessAndPullS(ADDA)
                 result += MLine.inherent(DAA)
               }
@@ -188,23 +233,36 @@ object M6809Buitins {
   }
 
   def compileWordSum(ctx: CompilationContext, expr: SumExpression, fromScratch: Boolean): List[MLine] = {
-    if (expr.decimal) ???
     val (constant, variable) = split(ctx, expr)
     val addendReads = variable
       .map(addend => addend._1 -> M6809ExpressionCompiler.compileToD(ctx, addend._2))
       .map(code => (if (code._1) 1 else 0, complexityD(code._2)) -> code).sortBy(_._1).map(_._2)
     val result = ListBuffer[MLine]()
+    def decimalInvertD(): Unit = {
+      // TODO: check if it's ok:
+      val label = ctx.nextLabel("xx")
+      result += MLine.immediate(CMPD, 0)
+      result += MLine.shortBranch(BEQ, label)
+      result += MLine.immediate(EORA, 0xff)
+      result += MLine.immediate(EORB, 0xff)
+      result += MLine.immediate(ADDD, 0x999B)
+      result += MLine.label(label)
+    }
     for ((neg, load) <- addendReads) {
       if (result.isEmpty && fromScratch) {
         result ++= load
         if (neg) {
-          result += MLine.immediate(EORA, 0xff)
-          result += MLine.immediate(EORB, 0xff)
-          result += MLine.immediate(ADDD, 1)
+          if (expr.decimal) {
+            decimalInvertD()
+          } else {
+            result += MLine.immediate(EORA, 0xff)
+            result += MLine.immediate(EORB, 0xff)
+            result += MLine.immediate(ADDD, 1)
+          }
         }
       } else {
         load match {
-          case List(l@MLine0(LDD, _, _)) =>
+          case List(l@MLine0(LDD, _, _)) if !expr.decimal=>
             if (neg) {
               result += l.copy(opcode = SUBD)
             } else {
@@ -212,17 +270,42 @@ object M6809Buitins {
             }
           case _ =>
             if (neg) {
-              result += MLine.pp(PSHS, M6809Register.D)
-              result ++= load
-              // TODO: optimize
-              result += MLine.immediate(EORA, 0xff)
-              result += MLine.immediate(EORB, 0xff)
-              result += MLine.immediate(ADDD, 1)
-              result += MLine.accessAndPullSTwice(ADDD)
+              if (expr.decimal) {
+                result += MLine.exg(M6809Register.A, M6809Register.B)
+                result += MLine.pp(PSHS, M6809Register.D)
+                result ++= load
+                decimalInvertD()
+                result += MLine.exg(M6809Register.A, M6809Register.B)
+                result += MLine.accessAndPullS(ADDA)
+                result += MLine.inherent(DAA)
+                result += MLine.exg(M6809Register.A, M6809Register.B)
+                result += MLine.accessAndPullS(ADCA)
+                result += MLine.inherent(DAA)
+              } else {
+                result += MLine.pp(PSHS, M6809Register.D)
+                result ++= load
+                // TODO: optimize
+                result += MLine.immediate(EORA, 0xff)
+                result += MLine.immediate(EORB, 0xff)
+                result += MLine.immediate(ADDD, 1)
+                result += MLine.accessAndPullSTwice(ADDD)
+              }
             } else {
-              result += MLine.pp(PSHS, M6809Register.D)
-              result ++= load
-              result += MLine.accessAndPullSTwice(ADDD)
+              if (expr.decimal) {
+                result += MLine.exg(M6809Register.A, M6809Register.B)
+                result += MLine.pp(PSHS, M6809Register.D)
+                result ++= load
+                result += MLine.exg(M6809Register.A, M6809Register.B)
+                result += MLine.accessAndPullS(ADDA)
+                result += MLine.inherent(DAA)
+                result += MLine.exg(M6809Register.A, M6809Register.B)
+                result += MLine.accessAndPullS(ADCA)
+                result += MLine.inherent(DAA)
+              } else {
+                result += MLine.pp(PSHS, M6809Register.D)
+                result ++= load
+                result += MLine.accessAndPullSTwice(ADDD)
+              }
             }
         }
       }
@@ -230,6 +313,13 @@ object M6809Buitins {
     if (!constant.isProvablyZero) {
       if (result.isEmpty) {
         result += MLine.immediate(LDD, constant)
+      } else if (expr.decimal) {
+        result += MLine.exg(M6809Register.A, M6809Register.B)
+        result += MLine.immediate(ADDA, constant.loByte)
+        result += MLine.inherent(DAA)
+        result += MLine.exg(M6809Register.A, M6809Register.B)
+        result += MLine.immediate(ADCA, constant.hiByte)
+        result += MLine.inherent(DAA)
       } else {
         result += MLine.immediate(ADDD, constant)
       }
@@ -283,7 +373,18 @@ object M6809Buitins {
     ctx.env.eval(rhs) match {
       case Some(NumericConstant(0, _)) => Nil
       case Some(NumericConstant(n, _)) => List.fill(n.toInt)(MLine.inherentB(op))
-      case _ => ???
+      case _ =>
+        val loop = ctx.nextLabel("sr")
+        val skip = ctx.nextLabel("ss")
+        M6809ExpressionCompiler.stashBIfNeeded(ctx, M6809ExpressionCompiler.compileToX(ctx, rhs)) ++ List(
+          MLine.label(loop),
+          MLine.indexedX(LEAX, -1),
+          MLine.immediate(CMPX, -1),
+          MLine.shortBranch(BEQ, skip),
+          MLine.inherentB(op),
+          MLine.shortBranch(BRA, loop),
+          MLine.label(skip)
+        )
     }
   }
 
@@ -291,8 +392,37 @@ object M6809Buitins {
     val op = if (left) List(MLine.inherentB(ASL), MLine.inherentA(ROL)) else List(MLine.inherentA(LSR), MLine.inherentB(ROR))
     ctx.env.eval(rhs) match {
       case Some(NumericConstant(0, _)) => Nil
+      case Some(NumericConstant(n, _)) if n >= 8 && n <= 12=>
+        if (left) List(MLine.tfr(M6809Register.B, M6809Register.A), MLine.immediate(LDB, 0)) ++ List.fill(n.toInt - 8)(MLine.inherentA(ASL))
+        else List(MLine.tfr(M6809Register.A, M6809Register.B), MLine.immediate(LDA, 0)) ++ List.fill(n.toInt - 8)(MLine.inherentB(LSR))
+      case Some(NumericConstant(7, _)) =>
+        if (left) {
+          List(
+            MLine.inherentA(LSR),
+            MLine.inherentB(ROR),
+            MLine.tfr(M6809Register.B, M6809Register.A),
+            MLine.immediate(LDB, 0),
+            MLine.inherentB(ROR))
+        } else {
+          List(
+            MLine.inherentB(ASL),
+            MLine.inherentA(ROL),
+            MLine.tfr(M6809Register.A, M6809Register.B),
+            MLine.immediate(LDA, 0),
+            MLine.inherentA(ROL))
+        }
       case Some(NumericConstant(n, _)) => List.fill(n.toInt)(op).flatten
-      case _ => ???
+      case _ =>
+        val loop = ctx.nextLabel("sr")
+        val skip = ctx.nextLabel("ss")
+        M6809ExpressionCompiler.stashDIfNeeded(ctx, M6809ExpressionCompiler.compileToX(ctx, rhs)) ++ List(
+          MLine.label(loop),
+          MLine.indexedX(LEAX, -1),
+          MLine.immediate(CMPX, -1),
+          MLine.shortBranch(BEQ, skip))++op++List(
+          MLine.shortBranch(BRA, loop),
+          MLine.label(skip)
+        )
     }
   }
 

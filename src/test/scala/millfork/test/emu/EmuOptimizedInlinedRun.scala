@@ -1,7 +1,7 @@
 package millfork.test.emu
 
 import millfork.assembly.m6809.opt.M6809OptimizationPresets
-import millfork.assembly.mos.opt.{LaterOptimizations, ZeropageRegisterOptimizations}
+import millfork.assembly.mos.opt.{LaterOptimizations, NmosOptimizations, ZeropageRegisterOptimizations}
 import millfork.assembly.z80.opt.Z80OptimizationPresets
 import millfork.{Cpu, OptimizationPresets}
 
@@ -16,10 +16,10 @@ object EmuOptimizedInlinedRun extends EmuRun(
     OptimizationPresets.Good ++
     OptimizationPresets.Good ++
     OptimizationPresets.AssOpt ++
-    OptimizationPresets.Good ++ LaterOptimizations.Nmos ++
+    OptimizationPresets.Good ++ NmosOptimizations.All ++
     ZeropageRegisterOptimizations.All ++
     OptimizationPresets.AssOpt ++
-    OptimizationPresets.Good ++ LaterOptimizations.Nmos ++
+    OptimizationPresets.Good ++ NmosOptimizations.All ++
     ZeropageRegisterOptimizations.All ++
     OptimizationPresets.AssOpt ++
     OptimizationPresets.AssOpt ++
@@ -47,6 +47,10 @@ object EmuOptimizedInlinedIntel8086Run extends EmuI86Run(OptimizationPresets.Nod
 }
 
 object EmuOptimizedInlinedSharpRun extends EmuZ80Run(Cpu.Sharp, OptimizationPresets.NodeOpt, Z80OptimizationPresets.GoodForSharp) {
+  override def inline: Boolean = true
+}
+
+object EmuOptimizedInlinedR800Run extends EmuZ80Run(Cpu.R800, OptimizationPresets.NodeOpt, Z80OptimizationPresets.GoodForR800) {
   override def inline: Boolean = true
 }
 

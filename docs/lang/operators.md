@@ -18,9 +18,9 @@ Millfork has different operator precedence compared to most other languages. Fro
 
 * `->` and `[]`
 
-* `*`, `*'`
+* `*`, `$*`, `/`, `%%`
 
-* `+`, `+'`, `-`, `-'`, `|`, `&`, `^`, `>>`, `>>'`, `<<`, `<<'`, `>>>>`
+* `+`, `$+`, `-`, `$-`, `|`, `&`, `^`, `>>`, `$>>`, `<<`, `$<<`, `>>>>`
 
 * `:`
 
@@ -34,9 +34,18 @@ Millfork has different operator precedence compared to most other languages. Fro
 
 You cannot use two different operators at the same precedence levels without using parentheses to disambiguate. 
 It is to prevent confusion about whether `a + b & c << d` means `(a + b) & (c << d)` `((a + b) & c) << d` or something else.   
-The only exceptions are `+` and `-`, and `+'` and `-'`. 
-They are interpreted as expected: `5 - 3 + 2 == 4` and `5 -' 3 +' 2 == 4`.  
-Note that you cannot mix `+'` and `-'` with `+` and `-`. 
+The only exceptions are `+` and `-`, and `$+` and `$-`. 
+They are interpreted as expected: `5 - 3 + 2 == 4` and `5 $- 3 $+ 2 == 4`.  
+Note that you cannot mix `$+` and `$-` with `+` and `-`. 
+
+Certain operators (`/`, `%%`, `<<`, `>>`, `$<<`, `$>>`, `>>>>`, `:`, `!=`) cannot have more than 2 parameters,
+i.e. `x / y / z` will not compile.
+
+The decimal operators have two different forms:
+
+* apostrophe form (e.g. `+'`) – the original one, deprecated, will be removed in Millfork 0.4
+
+* dollar form (e.g. `$+`) – available since Millfork 0.3.22
 
 ## Argument types
 
@@ -53,6 +62,8 @@ In the descriptions below, arguments to the operators are explained as follows:
 * `long` means any numeric type longer than two bytes, or a shorter type expanded to such length to match the other argument
 
 * `constant` means a compile-time constant
+
+* `trivial` means either a constant or a non-stack variable
 
 * `simple` means either: a constant, a non-stack variable,
 a pointer indexed with a constant, a pointer indexed with a non-stack variable, 
@@ -77,14 +88,14 @@ TODO
 
 ## Binary arithmetic operators
 
-* `+`, `-`:  
+* `+`, `-`:  addition and subtraction  
 `byte + byte`  
 `constant word + constant word`  
 `constant long + constant long`  
 `constant word + byte`  
 `word + word` (zpreg)
 
-* `*`: multiplication; the size of the result is the same as the size of the arguments  
+* `*`: multiplication (signed or unsigned); the size of the result is the same as the size of the largest of the arguments  
 `byte * constant byte`  
 `constant byte * byte`  
 `constant word * constant word`  
@@ -124,17 +135,20 @@ These operators work using the decimal arithmetic (packed BCD).
 
 On Ricoh-based targets (e.g. Famicom) they require the zeropage register to have size at least 4
 
-* `+'`, `-'`: decimal addition/subtraction  
-`byte +' byte`  
-`constant word +' constant word`  
-`constant long +' constant long`  
-`word +' word` (zpreg)
+* `$+`, `$-`: decimal addition/subtraction  
+`+'`, `-'`: (deprecated form)  
+`byte $+ byte`  
+`constant word $+ constant word`  
+`constant long $+ constant long`  
+`word $+ word` (zpreg)
 
-* `*'`: decimal multiplication  
-`constant *' constant`
+* `$*`: decimal multiplication  
+`*'`: (deprecated form)  
+`constant $* constant`
 
-* `<<'`, `>>'`: decimal multiplication/division by power of two  
-`byte <<' constant byte`
+* `$<<`, `$>>`: decimal multiplication/division by power of two  
+`<<'`, `>>'`: (deprecated form)  
+`byte $<< constant byte`
 
 ## Comparison operators
 
@@ -145,11 +159,15 @@ Note you cannot mix those operators, so `a <= b < c` is not valid.
 **WARNING:** Currently in cases like `a < f() < b`, `f()` may be evaluated an undefined number of times 
 (the current implementation calls it twice, but do not rely on this behaviour). 
 
+The `==` and `!=` operators also work for non-arithmetic types.
+
 * `==`: equality  
 `enum == enum`  
 `byte == byte`  
 `simple word == simple word`  
 `word == constant`  
+`simple word == word` (zpreg)  
+`word == simple word` (zpreg)  
 `simple long == simple long`
 
 * `!=`: inequality  
@@ -157,12 +175,15 @@ Note you cannot mix those operators, so `a <= b < c` is not valid.
 `byte != byte`  
 `simple word != simple word`  
 `word != constant`  
+`simple word != word` (zpreg)  
+`word != simple word` (zpreg)  
 `simple long != simple long`
 
 * `>`, `<`, `<=`, `>=`: inequality  
 `byte > byte`  
-`simple word > word`  
-`word > simple word`  
+`simple word > simple word`  
+`simple word > word` (zpreg)  
+`word > simple word` (zpreg)  
 `simple long > simple long`
 
 Currently, `>`, `<`, `<=`, `>=` operators perform signed comparison 
@@ -180,25 +201,28 @@ An expression of form `a[f()] += b` may call `f` an undefined number of times.
 `mutable word = word`  
 `mutable long = long`
 
-* `+=`, `+'=`, `|=`, `^=`, `&=`: modification in place  
+* `+=`, `$+=`, `|=`, `^=`, `&=`: modification in place  
+`+'=` (deprecated form)   
 `mutable byte += byte`  
 `mutable word += word`  
-`mutable long += long`
+`mutable trivial long += long`
 
 * `<<=`, `>>=`: shift in place  
 `mutable byte <<= byte`  
 `mutable word <<= byte`  
-`mutable long <<= byte`
+`mutable trivial long <<= byte`
 
-* `<<'=`, `>>'=`: decimal shift in place  
-`mutable byte <<'= constant byte`  
-`mutable word <<'= constant byte`  
-`mutable long <<'= constant byte`
+* `$<<=`, `$>>=`: decimal shift in place  
+`<<'=`, `>>'=` (deprecated form)  
+`mutable byte $<<= constant byte`  
+`mutable word $<<= constant byte`  
+`mutable trivial long $<<= constant byte`
 
-* `-=`, `-'=`: subtraction in place  
+* `-=`, `$-=`: subtraction in place  
+`-'=` (deprecated form)  
 `mutable byte -= byte`  
 `mutable word -= simple word`  
-`mutable long -= simple long`
+`mutable trivial long -= simple long`
 
 * `*=`: multiplication in place  
 `mutable byte *= constant byte`  
@@ -206,8 +230,9 @@ An expression of form `a[f()] += b` may call `f` an undefined number of times.
 `mutable word *= unsigned byte` (zpreg)
 `mutable word *= word` (zpreg)
 
-* `*'=`: decimal multiplication in place  
-`mutable byte *'= constant byte`
+* `$*=`: decimal multiplication in place  
+`*'=` (deprecated form)  
+`mutable byte $*= constant byte`
 
 * `/=`, `%%=`: unsigned division and modulo in place  
 `mutable unsigned byte /= unsigned byte` (zpreg)  
@@ -266,9 +291,9 @@ but you can access its fields or take its pointer:
 
 * `nonet`: expansion of an 8-bit operation to a 9-bit operation  
 `nonet(byte + byte)`  
-`nonet(byte +' byte)`  
+`nonet(byte $+ byte)`  
 `nonet(byte << constant byte)`  
-`nonet(byte <<' constant byte)`  
+`nonet(byte $<< constant byte)`  
 Other kinds of expressions than the above (even `nonet(byte + byte + byte)`) will not work as expected.
 
 * `hi`, `lo`: most/least significant byte of a word  
@@ -285,7 +310,16 @@ but not
 some enum → `word`
 
 * `sizeof`: size of the argument in bytes; the argument can be an expression or a type,
-and the result is a constant of either `byte` or `word` type, depending on situation
+and the result is a constant of either `byte` or `word` type, depending on the actual value.
+In case of aligned types, this returns the aligned size.
+
+* `typeof`: a word constant that identifies the type of the argument; the argument can be an expression or a type.
+The argument is never evaluated.  
+**Warnings:**
+    * **This is a highly experimental feature.**
+    * The exact values may change in any future version of the compiler. Only compare one `typeof` to another `typeof`.
+    * There is no guarantee that different types will have different values of `typeof`. Indeed, it's even easy to see that a Millfork program can have more than 65536 types – and values of `typeof` can clash even before that.
+    * In certain circumstances, pointer types and function pointer types may have different `typeof` values even if they're essentially the same.
 
 * `call`: calls a function via a pointer;  
 the first argument is the pointer to the function;  

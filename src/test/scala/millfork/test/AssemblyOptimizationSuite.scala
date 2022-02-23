@@ -11,7 +11,7 @@ import org.scalatest.{FunSuite, Matchers}
 class AssemblyOptimizationSuite extends FunSuite with Matchers {
 
   test("Duplicate RTS") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | void main () {
         |   if 1 == 1 {
@@ -22,7 +22,7 @@ class AssemblyOptimizationSuite extends FunSuite with Matchers {
   }
 
   test("Inlining variable") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | array output [5] @$C000
         | void main () {
@@ -37,7 +37,7 @@ class AssemblyOptimizationSuite extends FunSuite with Matchers {
   }
 
   test("Inlining variable 2") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | array output [100] @$C000
         | void main () {
@@ -52,7 +52,7 @@ class AssemblyOptimizationSuite extends FunSuite with Matchers {
   }
 
   test("Loading modified variables") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | byte output @$C000
         | void main () {
@@ -68,7 +68,7 @@ class AssemblyOptimizationSuite extends FunSuite with Matchers {
   }
 
   test("Bit ops") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | byte output @$C000
         | void main () {
@@ -82,7 +82,7 @@ class AssemblyOptimizationSuite extends FunSuite with Matchers {
   }
 
   test("Inlining after a while") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | array output [2]@$C000
         | void main () {
@@ -95,11 +95,14 @@ class AssemblyOptimizationSuite extends FunSuite with Matchers {
         |   }
         | }
         | void lol() {}
-      """.stripMargin)(_.readWord(0xc000) should equal(0x406))
+      """.stripMargin){m =>
+      m.readByte(0xc000) should equal(6)
+      m.readByte(0xc001) should equal(4)
+    }
   }
 
   test("Tail call") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | byte output @$C000
         | void main () {
@@ -302,7 +305,7 @@ class AssemblyOptimizationSuite extends FunSuite with Matchers {
   }
 
   test("Adding a nonet") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | word output @$C000
         | byte source @$C002
@@ -321,7 +324,7 @@ class AssemblyOptimizationSuite extends FunSuite with Matchers {
   }
 
   test("Common indexing subexpression elimination") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | array output [55] @$C000
         | array input = [0,1,2,3,4,5,6,7,8,9,10]
@@ -335,12 +338,13 @@ class AssemblyOptimizationSuite extends FunSuite with Matchers {
         | }
         |
       """.stripMargin){m =>
-      m.readWord(0xc003) should equal(3)
+      m.readByte(0xc003) should equal(3)
+      m.readByte(0xc004) should equal(0)
     }
   }
 
   test("Effectively const variable") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         |byte output @$c000
         |void main() {
@@ -408,7 +412,7 @@ class AssemblyOptimizationSuite extends FunSuite with Matchers {
   }
 
   test("Constant pointers") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         |byte output0 @$c000
         |byte output1 @$c001
@@ -428,7 +432,7 @@ class AssemblyOptimizationSuite extends FunSuite with Matchers {
   }
 
   test("Low bit") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | byte output @$c000
         | void main() {
@@ -447,7 +451,7 @@ class AssemblyOptimizationSuite extends FunSuite with Matchers {
   }
 
   test("Low bit 2") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | byte output @$c000
         | void main() {
@@ -466,7 +470,7 @@ class AssemblyOptimizationSuite extends FunSuite with Matchers {
   }
 
   test("Low bit 3") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | byte output @$c000
         | void main() {
@@ -488,7 +492,7 @@ class AssemblyOptimizationSuite extends FunSuite with Matchers {
   }
 
   test("Low bit 4") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | byte output @$c000
         | void main() {
@@ -528,7 +532,7 @@ class AssemblyOptimizationSuite extends FunSuite with Matchers {
     }
 
   test("Shift and increase") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
         """
           | byte output @$c000
           | void main() {
@@ -544,7 +548,7 @@ class AssemblyOptimizationSuite extends FunSuite with Matchers {
     }
 
   test("Add one bit") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
         """
           | byte output @$c000
           | void main() {
@@ -561,7 +565,7 @@ class AssemblyOptimizationSuite extends FunSuite with Matchers {
     }
 
   test("Shift, mask and increase 1") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Motorola6809)(
       """
         | byte output @$c000
         | void main() {
@@ -577,7 +581,7 @@ class AssemblyOptimizationSuite extends FunSuite with Matchers {
   }
 
   test("Shift, mask and increase 2") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Motorola6809)(
       """
         | byte output @$c000
         | void main() {
@@ -593,7 +597,7 @@ class AssemblyOptimizationSuite extends FunSuite with Matchers {
   }
 
   test("Shift, mask, increase and test") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Motorola6809)(
       """
         | byte output @$c000
         | void main() {
@@ -612,7 +616,7 @@ class AssemblyOptimizationSuite extends FunSuite with Matchers {
   }
 
   test("Double indices") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Motorola6809)(
       """
         | array output[1000] @$c000
         | array xbuf[40]
@@ -657,7 +661,7 @@ class AssemblyOptimizationSuite extends FunSuite with Matchers {
   }
 
   test("Not using X") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Motorola6809)(
       """
         | word output @$c000
         | inline word w() = 300
@@ -672,7 +676,7 @@ class AssemblyOptimizationSuite extends FunSuite with Matchers {
   }
 
   test("Some stuff") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Motorola6809)(
       """
         | array output[256] @ $c000
         | void main() {
@@ -692,7 +696,7 @@ class AssemblyOptimizationSuite extends FunSuite with Matchers {
   }
 
   test("Simple flags") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Intel8080)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Intel8080, Cpu.Motorola6809)(
       """
         | byte output @ $c000
         | void main() {
@@ -724,4 +728,332 @@ class AssemblyOptimizationSuite extends FunSuite with Matchers {
       """.stripMargin){ m => }
   }
 
+
+  test("Optimize parameters") {
+    // TODO the parameters in the sum_until functions are not inlined into registers:
+      val c = """
+        | byte output @ $c000
+        | array a = [2,5,6,8,8]
+        | void main() {
+        |   output = sum_until(a, 0, 3)
+        | }
+        |             noinline byte sum_until(pointer p, byte from, byte to_exclusive) {
+        |                byte i
+        |                byte sum
+        |                sum = 0
+        |                for i,from,paralleluntil,to_exclusive {
+        |                    sum += p[0]
+        |                    p+=1
+        |                }
+        |                return sum
+        |            }
+      """.stripMargin
+    EmuOptimizedZ80Run(c).readByte(0xc000) should equal(13)
+    EmuOptimizedIntel8080Run(c).readByte(0xc000) should equal(13)
+  }
+
+  test("Optimize load after test") {
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Intel8080, Cpu.Motorola6809)(
+      """
+        | byte output @ $c000
+        | void main() {
+        |   f(2)
+        | }
+        | noinline void f(byte i) {
+        |   if (i == 2) {
+        |     g(2)
+        |   }
+        | }
+        | noinline void g(byte i) {
+        |   output = i
+        | }
+      """.stripMargin
+    ) { m =>
+      m.readByte(0xc000) should equal(2)
+    }
+  }
+
+  test("Inline variables correctly") {
+    EmuBenchmarkRun("""
+        |array arr = [2,2,2,1,1,2,2]
+        |noinline byte f() {
+        |  byte i
+        |  i = 0
+        |  while true {
+        |   if arr[i] == 1 { return i }
+        |   i += 1
+        |  }
+        |  return $ff
+        |}
+        |volatile byte output @$c000
+        |void main() {
+        | output = f()
+        |}
+        |""".stripMargin
+    ) { m =>
+      m.readByte(0xc000) should equal(3)
+    }
+  }
+
+  test("Repeated struct array indexing optimization") {
+    EmuBenchmarkRun(
+      """
+        | struct A {
+        |   byte padding
+        |   byte x
+        |   byte y
+        | }
+        |
+        | array(A) arr[40]
+        |
+        | byte output  @$c000
+        | void main() {
+        |     arr[0].x = 1
+        |     f(0, 50)
+        |     output = arr[0].y
+        | }
+        |
+        | noinline void f(byte i, byte v) {
+        |   arr[i].y = arr[i].x + v
+        | }
+        |""".stripMargin){ m =>
+      m.readByte(0xc000) should equal(51)
+    }
+  }
+
+  test("Test bug #41") {
+    val code =
+      """
+        |struct Entity {
+        |    byte x,
+        |    byte y
+        |}
+        |
+        |array(Entity) entities [2]
+        |
+        |byte output @$c000
+        |
+        |void main() {
+        |    if test(0, 200) {
+        |        output = 1
+        |    }
+        |}
+        |
+        |inline bool test(byte i, byte y) {
+        |    return y >= entities[i].y && y <= entities[i].y + 8
+        |}
+        |
+        |""".stripMargin
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Motorola6809)(code) { m =>
+
+    }
+    EmuUndocumentedRun(code)
+  }
+
+  test("Optimize commutative in-place modifications using small arrays") {
+
+    val code =
+      """
+        |
+        |array output [4] @$c000
+        |
+        |void main() {
+        |    f($c000, 1, $c000, 2)
+        |    g(1, 2)
+        |}
+        |
+        |noinline void f(pointer p1, byte i1, pointer p2, byte i2) {
+        |    p1[i1] ^= p2[i2]
+        |}
+        |
+        |noinline void g(byte i1, byte i2) {
+        |    output[i1] ^= output[i2]
+        |}
+        |
+        |""".stripMargin
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos)(code) { m =>
+
+    }
+  }
+
+  test("Some combinations of shifting and indexing") {
+    EmuZ80BenchmarkRun(
+      """
+        |volatile byte x
+        |
+        |noinline void f() {
+        |    pointer(x/8)[0] |= 0x80>>(x&7)
+        |}
+        |
+        |void main() {
+        |    byte i
+        |    for i,0,parallelto,255 { pointer(i)[0] = 0 }
+        |    x = $91
+        |    f()
+        |}
+        |""".stripMargin) { m =>
+      m.readByte(0x91/8) should be (0x80>>(0x91 & 7))
+    }
+  }
+
+  test("Issue 99") {
+//    val m = new EmuRun(Cpu.StrictMos, Nil, List(
+//      LaterOptimizations.DoubleLoadToDifferentRegisters,
+//      LaterOptimizations.IndexSwitchingOptimization))(
+    val m = EmuOptimizedRun(
+      """
+        |array(byte) output [256] @$c000
+        |array(byte) input = [$10, $20, $30, $40, $50, $60, $70, $80, $90, $A0]
+        |byte write_index
+        |noinline void f(byte i, bool swap, byte first, byte data_1, byte data_2) {
+        |  output[write_index] = first
+        |  if (swap) {
+        |    output[write_index + 1] = data_2
+        |  } else {
+        |    output[write_index + 1] = data_1
+        |  }
+        |  output[write_index + 2] = input[i]
+        |
+        |  output[write_index + 3] = first
+        |  if (swap) {
+        |    output[write_index + 4] = data_1
+        |  } else {
+        |    output[write_index + 4] = data_2
+        |  }
+        |  output[write_index + 5] = input[i]
+        |
+        |  write_index += 6
+        |}
+        |void main() {
+        |  write_index = 0
+        |
+        |  byte j
+        |  bool flip
+        |  for j,0,until,10 {
+        |    flip = j != 5
+        |    f(j, flip, $FF, 1, 2)
+        |  }
+        |}
+        |""".stripMargin)
+  }
+
+  test("Sign extension") {
+    EmuBenchmarkRun(
+      """
+        |array(word) output [5]@$c000
+        |
+        |noinline void set(byte i, sbyte s) {
+        |    word w
+        |    output[i] = s
+        |}
+        |
+        |void main() {
+        |    set(0, 0)
+        |    set(1, -1)
+        |    set(2, 1)
+        |    set(3, 0)
+        |    set(4, 10)
+        |}
+        |""".stripMargin) { m =>
+      m.readWord(0xc000) should equal(0)
+      m.readWord(0xc002) should equal(0xffff)
+      m.readWord(0xc004) should equal(1)
+      m.readWord(0xc006) should equal(0)
+      m.readWord(0xc008) should equal(10)
+    }
+  }
+
+  test("Optimize certain bitmasking operations") {
+    val code =
+      """
+        |byte output @$c000
+        |const byte c = 4
+        |
+        |noinline void inc(byte x, byte y) {
+        |    if x & c != 0 || y & c != 0 { output += 1 }
+        |}
+        |
+        |void main() {
+        |    output = 0
+        |    inc(0, 0)
+        |    inc(4, 0) // ↑
+        |    inc(4, 4) // ↑
+        |    inc(0, 4) // ↑
+        |}
+        |""".stripMargin
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Motorola6809)(
+      code) { m =>
+      m.readByte(0xc000) should equal(code.count(_ == '↑'))
+    }
+  }
+
+  test("Optimize XOR comparisons") {
+    val code =
+      """
+        |byte output @$c000
+        |const byte c = 4
+        |
+        |noinline void inc(byte x) {
+        |    if x ^ c == c { output += 1 }
+        |}
+        |
+        |void main() {
+        |    output = 0
+        |    inc(0)
+        |    inc(1)
+        |    inc(2)
+        |}
+        |""".stripMargin
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Motorola6809)(
+      code) { m =>
+      m.readByte(0xc000) should equal(1)
+    }
+  }
+
+
+  test("Optimize +1 comparisons") {
+    val code =
+      """
+        |byte output @$c000
+        |const byte c = 4
+        |
+        |noinline void inc(byte x) {
+        |    if x + 1 == c { output += 1 }
+        |}
+        |
+        |void main() {
+        |    output = 0
+        |    inc(3)
+        |    inc(4)
+        |    inc(4)
+        |    inc(5)
+        |    inc(5)
+        |}
+        |""".stripMargin
+    EmuCrossPlatformBenchmarkRun(Cpu.Cmos, Cpu.Z80, Cpu.Motorola6809)(
+      code) { m =>
+      m.readByte(0xc000) should equal(1)
+    }
+  }
+
+  test("Don't optimize other XOR comparisons") {
+    val code =
+      """
+        |byte output @$c000
+        |const byte c = 4
+        |
+        |noinline void inc(byte x) {
+        |    if x ^ c >= c { output += 1 }
+        |}
+        |
+        |void main() {
+        |    output = 0
+        |    inc(4)
+        |}
+        |""".stripMargin
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Motorola6809)(
+      code) { m =>
+      m.readByte(0xc000) should equal(0)
+    }
+  }
 }

@@ -1,16 +1,16 @@
 package millfork.test
 
 import millfork.Cpu
-import millfork.test.emu.{EmuCrossPlatformBenchmarkRun, EmuUnoptimizedCrossPlatformRun, EmuUnoptimizedRun}
-import org.scalatest.{FunSuite, Matchers}
+import millfork.test.emu.{EmuCrossPlatformBenchmarkRun, EmuUnoptimizedCrossPlatformRun, EmuUnoptimizedRun, ShouldNotCompile}
+import org.scalatest.{AppendedClues, FunSuite, Matchers}
 
 /**
   * @author Karol Stasiak
   */
-class BooleanSuite extends FunSuite with Matchers {
+class BooleanSuite extends FunSuite with Matchers with AppendedClues {
 
   test("Not") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | byte output @$c000
         | array input = [5,6,7]
@@ -28,7 +28,7 @@ class BooleanSuite extends FunSuite with Matchers {
 
 
   test("And") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | byte output @$c000
         | array input = [5,6,7]
@@ -47,7 +47,7 @@ class BooleanSuite extends FunSuite with Matchers {
 
 
   test("Or") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | byte output @$c000
         | array input = [5,6,7]
@@ -89,7 +89,7 @@ class BooleanSuite extends FunSuite with Matchers {
       | inline void pass() { output += 1 }
       | noinline void fail() { outside[0] = 0 }
       """.stripMargin
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(code)(_.readByte(0xc000) should equal(code.sliding(4).count(_ == "pass")))
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(code)(_.readByte(0xc000) should equal(code.sliding(4).count(_ == "pass")))
   }
 
   test("Fat boolean") {
@@ -136,7 +136,7 @@ class BooleanSuite extends FunSuite with Matchers {
       | bool never() = false
       |
       """.stripMargin
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80)(code)(_.readByte(0xc000) should equal(code.sliding(4).count(_ == "pass")))
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Motorola6809)(code)(_.readByte(0xc000) should equal(code.sliding(4).count(_ == "pass")))
   }
 
   test("Fat boolean optimization") {
@@ -153,7 +153,7 @@ class BooleanSuite extends FunSuite with Matchers {
       | }
       |
       """.stripMargin
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80)(code)(_.readByte(0xc000) should equal(7))
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Motorola6809)(code)(_.readByte(0xc000) should equal(7))
   }
 
   test("Constant booleans") {
@@ -183,7 +183,7 @@ class BooleanSuite extends FunSuite with Matchers {
       | }
       |
       """.stripMargin
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80)(code)(_.readWord(0xc000) should equal(13))
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Motorola6809)(code)(_.readWord(0xc000) should equal(13))
   }
 
   test("Constant booleans mini") {
@@ -224,7 +224,7 @@ class BooleanSuite extends FunSuite with Matchers {
       | }
       |
       """.stripMargin
-    EmuUnoptimizedCrossPlatformRun(Cpu.Mos, Cpu.Z80)(code){ m =>
+    EmuUnoptimizedCrossPlatformRun(Cpu.Mos, Cpu.Z80, Cpu.Motorola6809)(code){ m =>
       m.readByte(0xc000) should equal(1)
     }
   }
@@ -244,6 +244,100 @@ class BooleanSuite extends FunSuite with Matchers {
     EmuUnoptimizedCrossPlatformRun(Cpu.Mos, Cpu.Z80, Cpu.Motorola6809)(code){ m =>
       m.readByte(0xc000) should equal(0)
       m.readByte(0xc001) should equal(1)
+    }
+  }
+
+  test("Boolean to number conversions") {
+    val code =
+      """
+        |byte output @$c000
+        |void main () {
+        |output = 0
+        |output += byte(output == 0)    // ↑
+        |output += byte(output == 0)
+        |output += byte(output != 2)   // ↑
+        |output += byte(output != 2)
+        |output += byte(2 > 1)     // ↑
+        |}
+        |""".stripMargin
+    EmuUnoptimizedCrossPlatformRun(Cpu.Mos, Cpu.Z80, Cpu.Motorola6809)(code){ m =>
+      m.readByte(0xc000) should equal(code.count(_ == '↑'))
+    }
+  }
+
+  test("Booleans should not work arithmetically") {
+    ShouldNotCompile(
+      """
+        |byte b
+        |void main() {
+        |  b += b == 1
+        |}
+        |""".stripMargin)
+    ShouldNotCompile(
+      """
+        |byte b
+        |void main() {
+        |  b = (b == 1) + (b == 1)
+        |}
+        |""".stripMargin)
+    ShouldNotCompile(
+      """
+        |byte b
+        |void main() {
+        |  b = (b == 1) | (b == 1)
+        |}
+        |""".stripMargin)
+  }
+
+  test("Complex boolean expressions") {
+    for ((x,y,w,h) <- Seq(
+      (2,3,2,2),
+      (2,2,1,1),
+      (0,0,0,0),
+      (0,5,0,0),
+      (5,0,0,0),
+      (0,0,5,0),
+      (0,0,0,5),
+    )) {
+
+      EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Motorola6809)(
+        s"""
+          |const byte MAX_SIZE = 4
+          |
+          |macro void is_room_within_bounds(byte x, byte y, byte width, byte height, bool output) {
+          |  output = x < MAX_SIZE && y < MAX_SIZE && x + width < MAX_SIZE && y + height < MAX_SIZE
+          |}
+          |
+          |byte temp
+          |
+          |bool in_bounds
+          |bool output0 @0xc000
+          |
+          |void main() {
+          |    byte x
+          |    byte y
+          |    byte width
+          |    byte height
+          |
+          |    temp=$x
+          |    x = temp
+          |    temp=$y
+          |    y = temp
+          |    temp=$w
+          |    width = temp
+          |    temp=$h
+          |    height = temp
+          |
+          |    is_room_within_bounds(x, y, width, height, in_bounds)
+          |
+          |    output0 = in_bounds
+          |
+          |}
+          |""".stripMargin) { m =>
+        val MAX_SIZE = 4
+        val bool = x < MAX_SIZE && y < MAX_SIZE && x + w < MAX_SIZE && y + h < MAX_SIZE
+        m.readByte(0xc000) should equal(if (bool) 1 else 0) withClue s"x=$x y=$y w=$w h=$h"
+      }
     }
   }
 }

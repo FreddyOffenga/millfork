@@ -54,7 +54,19 @@ The following features are defined based on the chosen CPU and compilation optio
 `CPUFEATURE_8080`, `CPUFEATURE_8085`, `CPUFEATURE_GAMEBOY`, `CPUFEATURE_Z80`,
 `CPUFEATURE_6502_ILLEGALS`, `CPUFEATURE_8085_ILLEGALS`, `CPUFEATURE_Z80_ILLEGALS`, `CPUFEATURE_Z80_NEXT` – 1 if given instruction subset is enabled, 0 otherwise
 
+* `ENCCONV_SUPPORTED` - 1 if the module `encconv` supports the function `to_screencode` and other related functions, 0 otherwise.
+
 * `ENCODING_SAME` - 1 if the encodings `default` and `src` are the same, 0 otherwise.
+
+* `ENCODING_NOLOWER` – 1 if the `default` encoding does not support lowercase ASCII letters.
+
+* `DECIMALS_SAME` - 1 if the encodings `default` and `src` have the same string terminator and decimal digits `'0'`-`'9'`, 0 otherwise.
+
+* `NULLCHAR_SAME` - 1 if the encodings `default` and `src` have the same string terminator, 0 otherwise.
+
+* `NULLCHAR` – the value of the `nullchar` constant
+
+* `NULLCHAR_SRC` – the value of the `nullchar_src` constant
 
 * `INIT_RW_MEMORY` – 1 if the option `ram_init_segment` is defined, 0 otherwise.
 See [the ROM vs RAM guide](../api/rom-vs-ram.md) for more information.
@@ -82,29 +94,22 @@ See [the ROM vs RAM guide](../api/rom-vs-ram.md) for more information.
 
 ### Commonly used features
 
+These features are frequently defined in the platform definition file.
+Some libraries may require that some of these be defined.
+
 * `WIDESCREEN` – 1 if the horizontal screen resolution, ignoring borders, is greater than 256, 0 otherwise
 
-* `CBM` – 1 if the target is an 8-bit Commodore computer (or a compatible one), 0 otherwise
-
-* `CBM_64_COMPAT` – 1 if the target is an 8-bit Commodore computer compatible with Commodore 64, 0 otherwise
-
-* `CBM_64_CRT` – 1 if the target is a cartridge for Commodore 64, 0 otherwise
-
-* `CBM_264` – 1 if the target is an 8-bit Commodore computer from the 264 line, 0 otherwise
+* `TALLSCREEN` – 1 if the vertical screen resolution, ignoring borders, is greater than 256, 0 otherwise
 
 * `KEYBOARD` – 1 if the target has a keyboard, 0 otherwise
+
+* `DISPLACED_MAIN` – set this to 1 if the `main` function is in a very unusual location for the target
+
+* `USE_MOUSE_MBM` –  set this to 1 if you want to enable middle button support for the mouse. 
 
 * `JOYSTICKS` – the maximum number of joysticks using standard hardware configurations, may be 0
 
 * `HAS_BITMAP_MODE` – 1 if the target has a display mode with every pixel addressable, 0 otherwise
-
-* `MOS_6510` – 1 if the target uses a MOS 6510-compatible processor (with an I/O port at $0000/$0001)
-
-* `CPM` – 1 if the target is CP/M, 0 otherwise
-
-* `IBM_PC` – 1 if the target is IBM PC, 0 otherwise
-
-* `MSX` – 1 if the target is MSX, 0 otherwise
 
 * `NTSC` – 1 if the target is NTSC, 0 otherwise
 
@@ -112,9 +117,31 @@ See [the ROM vs RAM guide](../api/rom-vs-ram.md) for more information.
 
 * `NULLPTR` – physical value of `nullptr`, default 0
 
-* `VERA_VERSION` – on Commander X16, the version of the VERA chip: `7` for 0.7, `8` for 0.8
+### Target-specific features
+
+These features are used to identify the target machine in multiplatform programs and libraries:
+
+* `CBM` – 1 if the target is an 8-bit Commodore computer (or a compatible one), 0 otherwise
+(for more Commodore-related preprocessor options, see [Preprocessor options for Commodore computer targets](./preprocessor_cbm.md))
+
+* `AMSTRAD_CPC`, `ATARI_2600`, `ATARI_8`, `ATARI_LYNX`, `APPLE_2`, `BBC_MICRO`,
+`COMMANDER_X16`, `CPM`, `GAMEBOY`, `IBM_PC`, `MSX`, `NEC_PC_88`, `NES`, `ZX_SPECTRUM`
+– 1 if the target is the machine in question, 0 otherwise
+
+* `VERA_VERSION` – on Commander X16, the version of the VERA chip: `7` for 0.7, `8` for 0.8, `9` for 0.9
+
 
 ### Built-in preprocessor functions and operators
+
+The `same` function returns 1 if given identical identifiers and 0 otherwise.
+It is the only function that does not support any other kind of parameters, and it's only useful in module templates.
+
+    // prints 1:
+    #infoeval same(a,a)
+    // prints 0:
+    #infoeval same(a,b)
+    // fails to compile
+    #infoeval same(a,1)
 
 The `defined` function returns 1 if the feature is defined, 0 otherwise.  
 All the other functions and operators treat undefined features as if they were defined as 0. 
@@ -126,11 +153,45 @@ The `if` function returns its second parameter if the first parameter is defined
     // prints 500:
     #infoeval if(0, 400, 500)
 
-TODO   
+The `min` and `max` functions return the smallest or largest parameter respectively. They support any number of arguments:
+
+    // prints 400:
+    #infoeval min(400, 500, 600)
+    // prints 500:
+    #infoeval max(400, 500)
+
+The following Millfork operators and functions are also available in the preprocessor:  
 `not`, `lo`, `hi`, `+`, `-`, `*`, `|`, `&`, `^`, `||`, `&&`, `<<`, `>>`,`==`, `!=`, `>`, `>=`, `<`, `<=`
 
 The following Millfork operators and functions are not available in the preprocessor:  
-`+'`, `-'`, `*'`, `<<'`, `>>'`, `:`, `>>>>`, `nonet`, all the assignment operators
+`$+`, `$-`, `$*`, `$<<`, `$>>`, `:`, `>>>>`, `nonet`, all the assignment operators
+
+
+### Character literals
+
+Preprocessor supports character literals. By default, they are interpreted in the default encoding,
+but you can suffix them with other encodings.
+
+    // usually prints 97:
+    #infoeval 'a'
+    // prints 97:
+    #infoeval 'a'ascii
+
+Exceptionally, you can suffix the character literal with `utf32`.
+This gives the literal the value of the Unicode codepoint of the character:
+
+    // may print 94, 96, 112, 173, 176, 184, 185, 222, 227, 234, 240, something else, or even fail to compile:
+    #infoeval 'π'
+    // prints 960:
+    #infoeval 'π'utf32
+
+Escape sequences are supported, as per encoding. `utf32` pseudoencoding supports the same escape sequences as `utf8`.
+
+
+### `#template`
+
+Defines the source to be a module template. See [Modules](./modules.md) for more information.
+
 
 ### `#if/#elseif/#else/#endif`
 

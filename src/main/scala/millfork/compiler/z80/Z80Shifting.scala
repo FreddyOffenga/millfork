@@ -1,13 +1,14 @@
 package millfork.compiler.z80
 
 import millfork.CompilationFlag
-import millfork.assembly.z80.{NoRegisters, ZLine, ZOpcode}
+import millfork.assembly.z80.{LocalVariableAddressViaHL, LocalVariableAddressViaIX, LocalVariableAddressViaIY, NoRegisters, ZLine, ZOpcode}
 import millfork.compiler.CompilationContext
 import millfork.env.NumericConstant
 import millfork.error.ConsoleLogger
 import millfork.node._
 
 import scala.collection.GenTraversableOnce
+import scala.collection.mutable.ListBuffer
 
 /**
   * @author Karol Stasiak
@@ -139,6 +140,34 @@ object Z80Shifting {
       case Some(NumericConstant(i, _)) =>
         if (i <= 0) {
           l
+        } else if (i == 8) {
+          if (left) {
+            l ++ List(ZLine.ld8(ZRegister.H, ZRegister.L), ZLine.ldImm8(ZRegister.L, 0))
+          } else {
+            l ++ List(ZLine.ld8(ZRegister.L, ZRegister.H), ZLine.ldImm8(ZRegister.H, 0))
+          }
+        } else if (i >= 9 && i <= 12 && extendedOps) {
+          if (left) {
+            l ++ List(ZLine.ld8(ZRegister.H, ZRegister.L), ZLine.ldImm8(ZRegister.L, 0)) ++ List.fill(i.toInt - 8)(ZLine.register(ZOpcode.SLA, ZRegister.H))
+          } else {
+            l ++ List(ZLine.ld8(ZRegister.L, ZRegister.H), ZLine.ldImm8(ZRegister.H, 0)) ++ List.fill(i.toInt - 8)(ZLine.register(ZOpcode.SRL, ZRegister.L))
+          }
+        } else if (i == 7 && extendedOps) {
+          if (left) {
+            l ++ List(
+              ZLine.register(ZOpcode.SRL, ZRegister.H),
+              ZLine.register(ZOpcode.RR, ZRegister.L),
+              ZLine.ld8(ZRegister.H, ZRegister.L),
+              ZLine.ldImm8(ZRegister.L, 0),
+              ZLine.register(ZOpcode.RR, ZRegister.L))
+          } else {
+            l ++ List(
+              ZLine.register(ZOpcode.SLA, ZRegister.L),
+              ZLine.register(ZOpcode.RL, ZRegister.H),
+              ZLine.ld8(ZRegister.L, ZRegister.H),
+              ZLine.ldImm8(ZRegister.H, 0),
+              ZLine.register(ZOpcode.RL, ZRegister.H))
+          }
         } else if (i >= 16) {
           l :+ ZLine.ldImm16(ZRegister.HL, 0)
 //        } else if (i > 8) { // TODO: optimize shifts larger than 8
@@ -244,44 +273,117 @@ object Z80Shifting {
   }
 
   def compileLongShiftInPlace(ctx: CompilationContext, lhs: LhsExpression, rhs: Expression, size: Int, left: Boolean): List[ZLine] = {
+    import ZOpcode._
+    import ZRegister._
     val extended = ctx.options.flag(CompilationFlag.EmitExtended80Opcodes)
-    val store = Z80ExpressionCompiler.compileByteStores(ctx, lhs, size, includeStep = false)
-    val loadLeft = Z80ExpressionCompiler.compileByteReads(ctx, lhs, size, ZExpressionTarget.HL)
-    val shiftOne = if (left) {
-      loadLeft.zip(store).zipWithIndex.flatMap {
-        case ((ld, st), ix) =>
-          import ZOpcode._
-          import ZRegister._
-          val shiftByte =
-            if (ix == 0) List(ZLine.register(ADD, A))
-            else List(ZLine.implied(RLA))
-          ld ++ shiftByte ++ st
+    val intel8080 = ctx.options.flag(CompilationFlag.EmitIntel8080Opcodes)
+    val Some((loadRegisterOperand, loadSequence)) =
+      Z80ExpressionCompiler.calculateAddressToAppropriatePointer(ctx, lhs, forWriting = true, extraOffset = if (left) 0 else size-1)
+    val result = ListBuffer[ZLine]()
+    result ++= loadSequence
+    def appendShift(preserveHL: Boolean): Unit = {
+      if (loadRegisterOperand == LocalVariableAddressViaHL && preserveHL) {
+        result += ZLine.ld8(D, H)
+        result += ZLine.ld8(E, L)
       }
-    } else {
-      loadLeft.reverse.zip(store.reverse).zipWithIndex.flatMap {
-        case ((ld, st), ix) =>
-          import ZOpcode._
-          import ZRegister._
-          val shiftByte = if (ix == 0) {
-            if (extended) List(ZLine.register(SRL, A))
-            else List(ZLine.register(OR, A), ZLine.implied(RRA))
-          } else List(ZLine.implied(RRA))
-          ld ++ shiftByte ++ st
+      if (left) {
+        for (ix <- 0 until size) {
+          val shiftedOperand = loadRegisterOperand match {
+            case LocalVariableAddressViaHL =>
+              LocalVariableAddressViaHL
+            case LocalVariableAddressViaIX(offset) =>
+              LocalVariableAddressViaIX(offset + ix)
+            case LocalVariableAddressViaIY(offset) =>
+              LocalVariableAddressViaIY(offset + ix)
+          }
+          if (ix == 0) {
+            if (extended) {
+              result += ZLine.register(SLA, shiftedOperand)
+            } else {
+              result += ZLine.ld8(A, shiftedOperand)
+              result += ZLine.register(ADD, A)
+              result += ZLine.ld8(shiftedOperand, A)
+            }
+          } else {
+            if (extended) {
+              result += ZLine.register(RL, shiftedOperand)
+            } else {
+              result += ZLine.ld8(A, shiftedOperand)
+              result += ZLine.implied(RLA)
+              result += ZLine.ld8(shiftedOperand, A)
+            }
+          }
+          if (loadRegisterOperand == LocalVariableAddressViaHL && ix != size - 1) {
+            result += ZLine.register(INC_16, HL)
+          }
+        }
+      } else {
+        for (ix <- (size - 1).to(0, -1)) {
+          val shiftedOperand = loadRegisterOperand match {
+            case LocalVariableAddressViaHL =>
+              LocalVariableAddressViaHL
+            case LocalVariableAddressViaIX(offset) =>
+              LocalVariableAddressViaIX(offset + ix)
+            case LocalVariableAddressViaIY(offset) =>
+              LocalVariableAddressViaIY(offset + ix)
+          }
+          if (ix == size - 1) {
+            if (extended) {
+              result += ZLine.register(SRL, shiftedOperand)
+            } else {
+              result += ZLine.ld8(A, shiftedOperand)
+              result += ZLine.register(OR, A)
+              result += ZLine.implied(RRA)
+              result += ZLine.ld8(shiftedOperand, A)
+            }
+          } else {
+            if (extended) {
+              result += ZLine.register(RR, shiftedOperand)
+            } else {
+              result += ZLine.ld8(A, shiftedOperand)
+              result += ZLine.implied(RRA)
+              result += ZLine.ld8(shiftedOperand, A)
+            }
+          }
+          if (loadRegisterOperand == LocalVariableAddressViaHL && ix != 0) {
+            result += ZLine.register(DEC_16, HL)
+          }
+        }
+      }
+      if (loadRegisterOperand == LocalVariableAddressViaHL && preserveHL) {
+        if (intel8080) {
+          result += ZLine.implied(EX_DE_HL)
+        } else {
+          result += ZLine.ld8(H, D)
+          result += ZLine.ld8(L, E)
+        }
       }
     }
     ctx.env.eval(rhs) match {
-      case Some(NumericConstant(0, _)) => Nil
+      case Some(NumericConstant(0, _)) => ()
       case Some(NumericConstant(n, _)) if n < 0 =>
         ctx.log.error("Negative shift amount", rhs.position) // TODO
-        Nil
-      case Some(NumericConstant(n, _)) =>
-        List.fill(n.toInt)(shiftOne).flatten
+        ()
+      case Some(NumericConstant(n, _)) if n < 3 => // TODO: more exact math on performance and size
+        for(i <- 0 until n.toInt) {
+          appendShift(i != n-1)
+        }
       case _ =>
         val calcCount = calculateIterationCountPlus1(ctx, rhs)
+        if (loadRegisterOperand == LocalVariableAddressViaHL) {
+          result ++= Z80ExpressionCompiler.stashHLIfChanged(ctx, calcCount)
+        } else {
+          result ++= calcCount
+        }
         val labelL = ctx.nextLabel("sh")
         val labelS = ctx.nextLabel("sh")
-        calcCount ++ List(ZLine.jumpR(ctx, labelS), ZLine.label(labelL)) ++ shiftOne ++ List(ZLine.label(labelS)) ++ ZLine.djnz(ctx, labelL)
+        result += ZLine.jumpR(ctx, labelS)
+        result += ZLine.label(labelL)
+        appendShift(true)
+        result += ZLine.label(labelS)
+        result ++= ZLine.djnz(ctx, labelL)
     }
+    result.toList
   }
 
 }

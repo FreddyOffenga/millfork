@@ -10,7 +10,7 @@ import org.scalatest.{FunSuite, Matchers}
 class SecondAssemblyOptimizationSuite extends FunSuite with Matchers {
 
   test("Add-shift-add") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Cmos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Cmos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | byte output @$c000
         | void main () {
@@ -23,7 +23,7 @@ class SecondAssemblyOptimizationSuite extends FunSuite with Matchers {
   }
 
   test("And-shift-and") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Cmos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Cmos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | byte output @$c000
         | void main () {
@@ -36,7 +36,7 @@ class SecondAssemblyOptimizationSuite extends FunSuite with Matchers {
   }
 
   test("Add with limit") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Cmos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Cmos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | byte output @$c000
         | const byte start = 5
@@ -105,7 +105,7 @@ class SecondAssemblyOptimizationSuite extends FunSuite with Matchers {
   }
 
   test("Conditional variable initialization") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | array output [16] @$c000
         | void main () {
@@ -142,6 +142,54 @@ class SecondAssemblyOptimizationSuite extends FunSuite with Matchers {
       m.readByte(0xc00e) should equal(1)
       m.readByte(0xc00f) should equal(0)
 
+    }
+  }
+
+  test("Bubblesort") {
+    val size = 27
+    val random = new scala.util.Random
+    val inputData = IndexedSeq.fill(size)(random.nextInt(256))
+    val expected = inputData.sorted
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Motorola6809)(
+      s"""
+         |array sorttable [$size] @$$C000 = [${inputData.mkString(",")}]
+         |
+         |void main() {
+         |    byte t,i,n1,n2
+         |    for t,${size - 2},downto,0{
+         |        for i,0,to,${size - 2}{
+         |            n1 = sorttable[i]
+         |            n2 = sorttable[i+1]
+         |            if n1>n2 {
+         |                sorttable[i] = n2
+         |                sorttable[i+1] = n1
+         |            }
+         |        }
+         |    }
+         |}
+         |
+         |""".stripMargin) { m =>
+      (0 until size).map(i => m.readByte(0xc000 + i)) should equal(expected)
+    }
+  }
+
+  test("Store-load-operate") {
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Motorola6809)(
+      """
+        | byte output @$c000
+        | byte output2 @$c001
+        | noinline void f(byte a) {
+        |   output = a
+        |   output2 |= output
+        | }
+        | void main () {
+        |   output2 = 5
+        |   f($a)
+        | }
+        | byte ee() { return $ee }
+      """.stripMargin) { m =>
+      m.readByte(0xc000) should equal(0xa)
+      m.readByte(0xc001) should equal(0xf)
     }
   }
 }

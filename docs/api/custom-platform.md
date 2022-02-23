@@ -3,6 +3,7 @@
 ## Adding a custom platform
 
 Every platform is defined in an `.ini` file with an appropriate name.
+The file is looked up in the directories on the include path, first directly, then in the `platform` subdirectory.
 
 As an extension, multiline entries are supported:
 if a line ends with a backslash character, the value continues to the next line. 
@@ -19,19 +20,28 @@ if a line ends with a backslash character, the value continues to the next line.
     
     * `strictricoh` (Ricoh 2A03/2A07 without illegal instructions)
     
-    * `cmos` (WDC 65C02 or 65SC02)
+    * `cmos` (65SC02, or any 65C02 without bit instructions)
+    
+    * `65sc02` (65SC02)
+    
+    * `65c02` (Rockwell 65C02)
+    
+    * `w65c02` (WDC 65C02)
     
     * `65ce02` (CSG 65CE02; experimental)
     
-    * `huc6280` (Hudson HuC6280; experimental)
+    * `huc6280` (Hudson HuC6280)
     
     * `65816` (WDC 65816/65802; experimental; currently only programs that use only 16-bit addressing are supported)
     
     * `z80` (Zilog Z80)
     
     * `strictz80` (Z80 without illegal instructions)
+
+    * `r800` (R800)
     
-    * `z80next` (Z80 core from ZX Spectrum Next)
+    * `z80next` (Z80 core from ZX Spectrum Next)  
+    Note: Millfork version 0.3.18 and earlier uses the name `zx80next` for this architecture.
     
     * `i8080` (Intel 8080)
     
@@ -53,7 +63,8 @@ See [the list of available encodings](../lang/text.md).
 * `screen_encoding` – default encoding for screencodes (literals with encoding specified as `scr`). 
 Default: the same as `encoding`.
 
-* `modules` – comma-separated list of modules that will be automatically imported
+* `modules` – comma-separated list of modules that will be automatically imported.
+This list cannot contain module template instantiations.
 
 * other compilation options (they can be overridden using commandline options):
 
@@ -71,6 +82,8 @@ Default: the same as `encoding`.
     * `emit_x80` – whether the compiler should emit instructions present on Sharp LR35902 and Z80, but absent on Intel 8080, default is `true` on compatible processors and `false` elsewhere
 
     * `emit_z80` – whether the compiler should emit Zilog Z80 instructions not covered by `emit_x80`, default is `true` on compatible processors and `false` elsewhere
+
+    * `emit_r800` – whether the compiler should emit R800 instructions, default is `true` on compatible processors and `false` elsewhere
     
     * `prevent_jmp_indirect_bug` – whether the compiler should try to avoid the indirect JMP bug, 
     default is `false` on 65C02-compatible or non-6502 processors and `true` elsewhere
@@ -106,6 +119,13 @@ Default: the same as `encoding`.
     
     * `iy_scratch` – allow using the IY register for other purposes, default is `false`
     
+    * `u_stack` – use the U register to access stack variables, default is `false`. Applicable only to 6809-based targets.
+    
+    * `y_stack` – use the Y register to access stack variables, default is `false`. Applicable only to 6809-based targets.  
+    **Warning: Currently, picking either `u_stack` or `y_stack` is required,
+    unless you want to always specify this option in the compiler's command line!**
+    The compiler doesn't support accessing the stack variables via the S stack pointer register yet.
+    
     * `software_stack` – use software stack for stack variables, default is `false`. Applicable only to 6502-based targets.
     
     * `output_intel_syntax` – use Intel syntax instead of Zilog syntax, default is `true` for Intel 8080/8085 and `false` otherwise
@@ -131,8 +151,8 @@ Only used for 6502-based targets. Cannot be used together with `zp_pointers`.
 A segment named `default` is always required.  
 Default: `default`. In all options below, `NAME` refers to a segment name.
 
-* `default_code_segment` – the default segment for code and initialized arrays.  
-Note that the default segment for uninitialized arrays and variables is always `default`.  
+* `default_code_segment` – the default segment for code and const arrays.  
+Note that the default segment for writable arrays and variables is always `default`.  
 Default: `default`
 
 * `ram_init_segment` – the segment storing a copy of initial values for preinitialized writable arrays and variables.
@@ -141,11 +161,13 @@ Default: none.
 
 * `segment_NAME_start` – the first address used for automatic allocation in the segment.  
 Note that on 6502-like targets, the `default` segment shouldn't start before $200, as the $0-$1FF range is reserved for the zeropage and the stack.  
-The `main` function will be placed as close to the beginning of its segment as possible, but not necessarily at `segment_NAME_start`
+The first object defined in `segment_NAME_layout` (usually the `main` function)
+will be placed as close to the beginning of its segment as possible,
+but not necessarily at `segment_NAME_start`
 
 * `segment_NAME_end` – the last address in the segment
 
-* `segment_NAME_codeend` – the last address in the segment for code and initialized arrays.  
+* `segment_NAME_codeend` – the last address in the segment for code and const arrays.  
 Only uninitialized variables are allowed between `segment_NAME_codeend` and `segment_NAME_end`.  
 Default: the same as `segment_NAME_end`.
 
@@ -155,7 +177,7 @@ Default: `after_code`.
 * `segment_NAME_bank` – the bank number the segment belongs to. Default: `0`.
 For better debugging on NES, RAM segments should use bank number `$ff`.
 
-* `segment_NAME_fill` – the byte value used to fill gaps and other unused space in the bank. Default: `0`.
+* `segment_NAME_fill` – the byte value used to fill gaps and other unused space in the segment. Default: `0`.
 
 * `segment_NAME_layout` – a comma-separated list of object names that defines in what order the objects are laid out in the segment.
 One item has to be `*`, it means "all the other objects".  
@@ -186,9 +208,15 @@ Default: `main,*`
     
     * `endaddr_be` – the same, but big-endian
     
-    * `startaddr+123`, `startaddr_be+123`, `endaddr+123`, `endaddr_be+123` – the same, but incremented by the given number
+    * `addr:XXXX` – little-endian 16-bit address of the symbol XXXX
+    
+    * `addr_be:XXXX`  – the same, but big-endian
+    
+    * `startaddr+123`, `startaddr_be+123`, `endaddr+123`, `endaddr_be+123`, `addr:XXXX+123`, `addr_be:XXXX+123` – the same, but incremented by the given number
 
-    * `startaddr-123`, `startaddr_be-123`, `endaddr-123`, `endaddr_be-123` – the same, but decremented by the given number
+        * the number can be decimal, hexadecimal, octal, quaternary or binary
+
+    * `startaddr-123`, `startaddr_be-123`, `endaddr-123`, `endaddr_be-123`, `addr:XXXX-123`, `addr_be:XXXX-123`– the same, but decremented by the given number
     
     * `startpage` – the high byte of `startaddr`
     
@@ -199,18 +227,30 @@ Default: `main,*`
     * `length+123`, `length_be+123` – the same, but incremented by the given number
     
     * `length-123`, `length_be-123` – the same, but decremented by the given number
+    
+    * `programname-123` – the name of the program of the given length, uppercase ASCII, padded with spaces
 
     * `allocated` – all used bytes
     
     * `pagecount` – the number of pages used by all used bytes (including partially filled pages)
     
+    * `"<string>"` – literal ASCII string; commas, non-ASCII characters and escape sequences are not supported
+
     * `<addr>:<addr>` - inclusive range of bytes
     
     * `<segment>:<addr>:<addr>` - inclusive range of bytes in a given segment
     
     * `d88` - a D88 floppy disk image for PC-88
     
-    * `tap` - a tape disk image for ZX Spectrum
+    * `tap:XXXX` - a tape image for ZX Spectrum; XXXX is the name of the entry point to the program
+    
+    * `tap` – equivalent to `tap:main`
+    
+    * `trscmd:XXXX` - a chunked loadable executable for TRS-80 Model 1 or 3 running TRS-DOS, also known as the /CMD format; XXXX is the name of the entry point to the program
+    
+    * `trscmd` - equivalent to `trscmd:main`
+
+* `format_segment_NAME` – if using the `per_segment` style, overrides the format for the given segment 
     
 * `extension` – target file extension, with or without the dot
 
@@ -227,3 +267,7 @@ Default: `main,*`
     * `sym` – format used by the WLA/DX assembler. The extension is `.sym`.
     
     * `fceux` – multi-file format used by the FCEUX emulator. The extension is `.nl`.
+    
+    * `mesen` – format used by the Mesen emulator. The extension is `.mlb`.
+    
+    * `ld65` – format used by the `ld65` linker. The extension is `.dbg`.

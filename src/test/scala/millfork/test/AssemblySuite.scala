@@ -1,6 +1,6 @@
 package millfork.test
 import millfork.Cpu
-import millfork.test.emu.{EmuBenchmarkRun, EmuCrossPlatformBenchmarkRun, EmuOptimizedCmosRun, EmuOptimizedRun}
+import millfork.test.emu.{EmuBenchmarkRun, EmuCrossPlatformBenchmarkRun, EmuOptimizedCmosRun, EmuOptimizedHudsonRun, EmuOptimizedRun, EmuUndocumentedRun, EmuUnoptimizedCrossPlatformRun, EmuUnoptimizedHudsonRun, EmuUnoptimizedM6809Run, EmuUnoptimizedRun, EmuUnoptimizedZ80Run, ShouldNotCompile}
 import org.scalatest.{AppendedClues, FunSuite, Matchers}
 
 /**
@@ -21,6 +21,72 @@ class AssemblySuite extends FunSuite with Matchers with AppendedClues {
       """.stripMargin)(_.readByte(0xc000) should equal(1))
   }
 
+  test("Self-modifying assembly") {
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Motorola6809)(
+      """
+        | byte output @$c000
+        | // w&x
+        | asm void main () {
+        |   lda #3
+        |   sta label(.l)+1
+        |   sta .l+1
+        |   .l: lda #55
+        |   sta output
+        |   rts
+        |   ignored:}
+      """.stripMargin)(_.readByte(0xc000) should equal(3))
+  }
+
+  test("Self-modifying assembly 2") {
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Motorola6809)(
+      """
+        | byte output @$c000
+        | // w&x
+        | asm void f() {
+        |   f_data:
+        |   lda #$ff
+        |   rts
+        | }
+        |
+        | asm void main () {
+        |   lda f_data
+        |   sta f_data
+        |   lda #3
+        |   sta label(f_data)+1
+        |   lda #0
+        |   jsr f_data
+        |   sta output
+        |   lda #lo(f)
+        |   rts
+        |   ignored:}
+      """.stripMargin)(_.readByte(0xc000) should equal(3))
+  }
+
+  test("Self-modifying assembly 2 (Z80)") {
+      EmuCrossPlatformBenchmarkRun(Cpu.Z80)(
+        """
+          | byte output @$c000
+          | // w&x
+          | asm void f() {
+          |   f_data:
+          |   ld a, $ff
+          |   ret
+          | }
+          |
+          | asm void main () {
+          |   ld a,(f_data)
+          |   ld (f_data),a
+          |   ld a,3
+          |   ld (label(f_data)+1),a
+          |   ld a,0
+          |   call f_data
+          |   ld (output),a
+          |   ld b,lo(f)
+          |   ret
+          |   ignored:}
+        """.stripMargin)(_.readByte(0xc000) should equal(3))
+    }
+
   test("Assembly functions") {
     EmuBenchmarkRun(
       """
@@ -32,6 +98,7 @@ class AssemblySuite extends FunSuite with Matchers with AppendedClues {
         | asm void thing() {
         |  inc $c000
         |  rts
+        |  ignored:
         | }
       """.stripMargin)(_.readByte(0xc000) should equal(1))
   }
@@ -225,5 +292,371 @@ class AssemblySuite extends FunSuite with Matchers with AppendedClues {
 
     }
   }
+
+  test("Undocumented opcodes") {
+    EmuUndocumentedRun(
+      """
+        | asm void main() {
+        |     rts
+        |     kil
+        |     slo $4
+        |     slo $400
+        |     slo $4,x
+        |     slo $400,x
+        |     slo $400,y
+        |     slo ($4,x)
+        |     slo ($4),y
+        |     rla $4
+        |     rla $400
+        |     rla $4,x
+        |     rla $400,x
+        |     rla $400,y
+        |     rla ($4,x)
+        |     rla ($4),y
+        |     rra $4
+        |     rra $400
+        |     rra $4,x
+        |     rra $400,x
+        |     rra $400,y
+        |     rra ($4,x)
+        |     rra ($4),y
+        |     sre $4
+        |     sre $400
+        |     sre $4,x
+        |     sre $400,x
+        |     sre $400,y
+        |     sre ($4,x)
+        |     sre ($4),y
+        |     dcp $4
+        |     dcp $400
+        |     dcp $4,x
+        |     dcp $400,x
+        |     dcp $400,y
+        |     dcp ($4,x)
+        |     dcp ($4),y
+        |     isc $4
+        |     isc $400
+        |     isc $4,x
+        |     isc $400,x
+        |     isc $400,y
+        |     isc ($4,x)
+        |     isc ($4),y
+        |     lax $4
+        |     lax $4,y
+        |     lax $400
+        |     lax $400,y
+        |     lax ($4,x)
+        |     lax ($4),y
+        |     sax $4
+        |     sax $4,y
+        |     sax $400
+        |     sax ($4,x)
+        |     anc #$4
+        |     alr #$4
+        |     arr #$4
+        |     xaa #$4
+        |     lxa #$4
+        |     sbx #$4
+        |     ahx ($4),y
+        |     ahx $400,y
+        |     shy $400,x
+        |     shx $400,y
+        |     tas $400,y
+        |     las $400,y
+        |     bne $300
+        |     brk #4
+        |     bne #4
+        |     rts
+        | }
+        |
+        |""".stripMargin
+    )
+  }
+
+  test("HuC6280 opcodes") {
+    EmuOptimizedHudsonRun(
+      """
+        | asm void main() {
+        |     rts
+        |     tam #1
+        |     tma #2
+        |     bbr0 $33,main
+        |     bbs0 $33,main
+        |     clx
+        |     cly
+        |     csh
+        |     csl
+        |     rmb0 $80
+        |     smb0 $80
+        |     sax
+        |     say
+        |     set
+        |     st0 #1
+        |     st1 #1
+        |     st2 #1
+        |     stp
+        |     sxy
+        |     tam #3
+        |     tma #5
+        |     trb $800
+        |     trb $4
+        |     tsb $800
+        |     tsb $4
+        |     tai $4000,$5000,$300
+        |     tia $4000,$5000,$300
+        |     tii $4000,$5000,$300
+        |     tin $4000,$5000,$300
+        |     tdd $4000,$5000,$300
+        |     tst #$44,4
+        |     tst #$44,4,X
+        |     tst #$44,3334
+        |     tst #$44,3334,X
+        |     rts
+        | }
+        |
+        |""".stripMargin)
+  }
+
+  test("Short branch too large") {
+    ShouldNotCompile(
+      """
+        |asm void main() {
+        |bne __main_exit
+        |[for i,0,until,200 [$EA]]
+        |__main_exit:
+        |rts
+        |}
+        |""".stripMargin, Set(Cpu.Mos))
+  }
+
+  test("Compile params properly") {
+    val m = EmuUnoptimizedRun(
+      """
+        |noinline asm void f(byte register(a) v0, byte register(x) v1) {
+        | sta $c000
+        | stx $c001
+        | rts
+        |}
+        |
+        |void main() {
+        | f(9,3)
+        |}
+        |""".stripMargin)
+    m.readByte(0xc000) should equal(9)
+    m.readByte(0xc001) should equal(3)
+  }
+
+
+  test("Compile local labels properly (6502)") {
+    val m = EmuUnoptimizedRun(
+      """
+        |byte output1 @$c001
+        |byte output2 @$c002
+        |noinline asm byte one() {
+        |  jmp .l
+        |  .l:
+        |  lda #1
+        |  rts
+        |}
+        |noinline asm byte two() {
+        |  jmp .l
+        |  .l:
+        |  lda #2
+        |  rts
+        |}
+        |
+        |void main() {
+        |   output1 = one()
+        |   output2 = two()
+        |}
+        |""".stripMargin)
+    m.readByte(0xc001) should equal(1)
+    m.readByte(0xc002) should equal(2)
+  }
+
+  test("Compile local labels properly (Z80)") {
+    val m = EmuUnoptimizedZ80Run(
+      """
+        |byte output1 @$c001
+        |byte output2 @$c002
+        |noinline asm byte one() {
+        |  jp .l
+        |  .l:
+        |  ld a,1
+        |  ret
+        |}
+        |noinline asm byte two() {
+        |  jp .l
+        |  .l:
+        |  ld a,2
+        |  ret
+        |}
+        |
+        |void main() {
+        |   output1 = one()
+        |   output2 = two()
+        |}
+        |""".stripMargin)
+    m.readByte(0xc001) should equal(1)
+    m.readByte(0xc002) should equal(2)
+  }
+
+  test("Compile local labels properly (6809)") {
+    val m = EmuUnoptimizedM6809Run(
+      """
+        |byte output1 @$c001
+        |byte output2 @$c002
+        |noinline asm byte one() {
+        |  jmp .l
+        |  .l:
+        |  ldb #1
+        |  rts
+        |}
+        |noinline asm byte two() {
+        |  jmp .l
+        |  .l:
+        |  ldb #2
+        |  rts
+        |}
+        |
+        |void main() {
+        |   output1 = one()
+        |   output2 = two()
+        |}
+        |""".stripMargin)
+    m.readByte(0xc001) should equal(1)
+    m.readByte(0xc002) should equal(2)
+  }
+
+  test("Interrupt functions in assembly should not have prologue (6502)") {
+    val m = EmuUnoptimizedRun(
+      """
+        |byte output @$c000
+        |noinline interrupt asm void i() {
+        |  nop
+        |  rti
+        |}
+        |void main() {
+        |   output = pointer(i.addr)[0]
+        |}
+        |""".stripMargin)
+    m.readByte(0xc000) should equal(0xea)
+  }
+
+  test("Interrupt functions in assembly should not have prologue (Z80)") {
+    val m = EmuUnoptimizedZ80Run(
+      """
+        |byte output @$c000
+        |noinline interrupt asm void i() {
+        |  nop
+        |  reti
+        |}
+        |void main() {
+        |   output = pointer(i.addr)[0]
+        |}
+        |""".stripMargin)
+    m.readByte(0xc000) should equal(0)
+  }
+
+  test("Interrupt functions in assembly should not have prologue (M6809)") {
+    val m = EmuUnoptimizedM6809Run(
+      """
+        |byte output @$c000
+        |noinline interrupt asm void i() {
+        |  nop
+        |  rti
+        |}
+        |void main() {
+        |   output = pointer(i.addr)[0]
+        |}
+        |""".stripMargin)
+    m.readByte(0xc000) should equal(0x12)
+  }
+
+  test("65CE02 opcodes") {
+    EmuUnoptimizedCrossPlatformRun(Cpu.CE02)(
+      """
+        |byte output @$c000
+        |void stuff() {
+        |   output = 42
+        |}
+        |void main() {
+        |   word p
+        |   p = stuff.addr
+        |   asm {
+        |     jsr (p)
+        |   }
+        |   return
+        |   asm {
+        |     bsr stuff
+        |     see
+        |     cle
+        |     ldz #$a3
+        |     ldz $abab
+        |     ldz $bbbb,x
+        |     stz $64
+        |     stz $74,x
+        |     stz $9c9c
+        |     stz $9e9e,x
+        |     asr
+        |     asr $44
+        |     asr $54,x
+        |     asw $cbcb
+        |     row $ebeb
+        |     dew $c3
+        |     inw $e3
+        |     neg
+        |     dec
+        |     inc
+        |     dez
+        |     inz
+        |     tab
+        |     tba
+        |     taz
+        |     tza
+        |     tsy
+        |     tys
+        |     phw #$f4f4
+        |     phw $fcfc
+        |     phx
+        |     phy
+        |     phz
+        |     plz
+        |     ply
+        |     plx
+        |     .here: bra .here
+        |     bbr0 $0F, .here
+        |     bbs0 $8F, .here
+        |     jsr ($2323,x)
+        |     jmp ($7c7c,x)
+        |     rmb0 $07
+        |     smb0 $87
+        |     ora ($12),z
+        |     and ($32),z
+        |     eor ($52),z
+        |     adc ($72),z
+        |     sta ($92),z
+        |     lda ($b2),z
+        |     cmp ($d2),z
+        |     sbc ($f2),z
+        |     lda ($e2,s),y
+        |     sta ($82,s),y
+        |     map
+        |     [for x,0,until,300 [0]]
+        |     lbra .here
+        |     lbeq .here
+        |     lbcc .here
+        |     lbcs .here
+        |     lbvs .here
+        |     lbvc .here
+        |     lbmi .here
+        |     lbpl .here
+        |   }
+        |}
+        |""".stripMargin) { m =>
+      m.readByte(0xc000) should equal(42)
+    }
+  }
+
 
 }

@@ -13,6 +13,26 @@ Allowed line endings are U+000A, U+000D and U+000D/U+000A.
 Outside of text strings and comments, the only allowed characters are U+0009 and U+0020–U+007E
 (so-called printable ASCII).
 
+## Valid identifiers
+
+Identifiers are used for variable names, function names, array names, segment names.
+
+Identifiers have to start with a letter or an underscore, and they can contain letters, underscores, digits and dollar signs.
+
+An identifier cannot end with a dollar sign, nor can it contain two consecutive dollar signs. 
+
+Identifiers using dollar signs are reserved for internal use, do not use them without a good reason.
+
+There is no hard limit on the identifier length.
+
+    a     // valid
+    1a    // invalid
+    a1    // valid
+    _1    // valid
+    a$1   // valid, but discouraged
+    a$$a  // invalid
+    a$    // invalid
+
 ## Comments
 
 Comments start with `//` and last until the end of line.
@@ -30,7 +50,7 @@ or a top level of a function (*local* variables).
 
 Syntax:
 
-`[segment(<segment>)] [volatile] [<storage>] <type> <name> [@<address>] [= <initial_value>]`
+`[segment(<segment>)] [volatile] [<storage>] <type> <name> [<optimization hints>] [@<address>] [= <initial_value>]`
 
 Examples:
 
@@ -43,11 +63,14 @@ Examples:
 
 * `volatile` means that the variable is volatile.
 The optimizer shouldn't remove or reorder accesses to volatile variables.
-Volatile variables cannot be declared as `register` or `stack.  
+Volatile variables (unlike non-volatile ones) will not be removed or inlined by the optimizer.
+Volatile variables cannot be declared as `register` or `stack`.  
 
 * `<storage>` can be only specified for local variables. It can be either `stack`, `static`, `register` or nothing.
 `register` is only a hint for the optimizer. 
 See [the description of variable storage](../abi/variable-storage.md).
+  
+* `<optimization hints>` is a list of [optimization hints](./hints.md), separated by spaces
 
 * `<address>` is a constant expression that defines where in the memory the variable will be located. 
 If not specified, it will be located according to the usual allocation rules. 
@@ -86,6 +109,12 @@ For every variable `x` larger than a byte, extra subvariables are defined:
     * constituent bytes, from low to high: `x.b0`, `x.b1`, `x.b2`, etc.
     
     * the lowest word: `x.loword` (=`x.b1:x.b0`)
+    
+* if `x` is a typed pointer:
+    
+    * a view of as a raw pointer: `x.raw`
+
+See also [the list of magic suffixes](./suffixes.md).
 
 ### Constant declarations
 
@@ -217,7 +246,11 @@ is equivalent to:
 
     import <module>
     
-Adds a module to the program.
+Adds a module to the program. The module name can be a valid identifier
+or a sequence of identifiers separated by forward slashes:
+
+    import module1
+    import library1/module2
 
 The module is looked up first in the current working directory, and then in the include directories.
 
@@ -366,11 +399,17 @@ for <variable> , <start> , <direction> , <end> {
 }
 for <variable> : <enum type> {
 }
+for <variable> : <array> {
+}
+for <variable> , <variable2> : <array> {
+}
 for <variable> : [ <comma separated expressions> ]  {
 }
 ```
 
 * `<variable>` – an already defined numeric variable
+
+* `<variable2>` – an already defined numeric variable
 
 * `<direction>` – the type of range to traverse:
 
@@ -406,10 +445,33 @@ for <variable> : [ <comma separated expressions> ]  {
 
 * `<enum type>` – traverse enum constants of given type, in arbitrary order
 
+* `<array>` – traverse given array, in arbitrary order,
+assigning the index to `<variable>` and either the element or the pointer to the element to `<variable2>`
+
 * `<comma separated expressions>` – traverse every value in the list, in the given order.
 Values do not have to be constant.
 If a value is not a constant and its value changes while executing the loop, the behaviour is undefined.
 Jumps using `goto` across the scope of this kind of loop are disallowed.
+
+Examples:
+
+    struct S { ... }
+    pointer.S p
+    S s
+    byte i
+    array(str) arr [8]
+    enum E { E_1, E_2, E_3 }
+    E e
+    
+    for i,0,until,8 { ... }  // executes the body with i=0, i=1, ... i=7
+    for i,0,to,7 { ... }     // executes the body with i=0, i=1, ... i=7
+    for i,0,paralleluntil,8 { ... }  // executes the body with i=0, i=1, ... i=7 (in arbitrary order)
+    for i,0,parallelto,8 { ... }  // executes the body with i=0, i=1, ... i=7 (in arbitrary order)
+    for i,7,downto,0 { ... } // executes the body with i=7, i=6, ... i=0
+    for i:arr { ... }        // executes the body with i=0, i=1, ... i=7 (in arbitrary order)
+    for i,s:arr { ... }      // executes the body with i=0, s=arr[0]; i=1, s=arr[1]; ... i=7, s=arr[7] (in arbitrary order)
+    for i,p:arr { ... }      // executes the body with i=0, p=arr[0].pointer; ... i=7, p=arr[7].pointer (in arbitrary order)
+    for e:E { ... }          // executes the body with e=E_1, e=E_2, e=E_3 (in arbitrary order)
 
 ### `break` and `continue` statements
 
@@ -433,6 +495,7 @@ Labelless `break` and `continue` apply to the innermost `for`, `while` or `do-wh
 `break for`, `continue do` etc. apply to the innermost loop of the given type.
 
 `break i` and `continue i` apply to the innermost `for` loop that uses the `i` variable.
+`for` loops of the form `for i,j:array` can be broken from using `break i` only, not `break j`.
 
 ### `goto` and `label`
 

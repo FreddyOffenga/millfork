@@ -44,6 +44,8 @@ object OptimizationPresets {
     TwoVariablesToIndexRegistersOptimization,
     AlwaysGoodOptimizations.RearrangableLoadFromTheSameLocation,
     AlwaysGoodOptimizations.PoinlessLoadBeforeAnotherLoad,
+    RepeatedIndexCalculationOptimization(true),
+    RepeatedIndexCalculationOptimization(false),
     AlwaysGoodOptimizations.CommonIndexSubexpressionElimination,
     AlwaysGoodOptimizations.PointlessOperationPairRemoval,
     AlwaysGoodOptimizations.PointlessOperationPairRemoval2,
@@ -61,6 +63,7 @@ object OptimizationPresets {
     AlwaysGoodOptimizations.PointlessMath,
     AlwaysGoodOptimizations.PointlessOperationFromFlow,
     AlwaysGoodOptimizations.SimplifiableComparison,
+    AlwaysGoodOptimizations.ReuseIndex,
     VariableToRegisterOptimization,
     TwoVariablesToIndexRegistersOptimization,
     ChangeIndexRegisterOptimizationPreferringX2Y,
@@ -68,6 +71,7 @@ object OptimizationPresets {
     TwoVariablesToIndexRegistersOptimization,
     ChangeIndexRegisterOptimizationPreferringY2X,
     VariableToRegisterOptimization,
+    AlwaysGoodOptimizations.ReuseIndex,
     TwoVariablesToIndexRegistersOptimization,
     AlwaysGoodOptimizations.ConstantFlowAnalysis,
     LaterOptimizations.DoubleLoadToDifferentRegisters,
@@ -154,6 +158,7 @@ object OptimizationPresets {
     AlwaysGoodOptimizations.PointlessMathFromFlow,
     AlwaysGoodOptimizations.PointlessMathFromFlow,
     AlwaysGoodOptimizations.PointlessMathFromFlow,
+    LaterOptimizations.CommutativeInPlaceModifications,
     AlwaysGoodOptimizations.LoadingOfJustWrittenValue,
     AlwaysGoodOptimizations.PointlessStackStore,
     AlwaysGoodOptimizations.OptimizeZeroComparisons,
@@ -178,6 +183,7 @@ object OptimizationPresets {
     AlwaysGoodOptimizations.SimplifiableStackOperation,
     LaterOptimizations.UseBit,
     LaterOptimizations.ReplaceableLoad,
+    LaterOptimizations.BranchlessSignExtension,
   )
 
   val Good: List[AssemblyOptimization[AssemblyLine]] = List[AssemblyOptimization[AssemblyLine]](
@@ -241,7 +247,10 @@ object OptimizationPresets {
     AlwaysGoodOptimizations.RearrangableLoadFromTheSameLocation,
     AlwaysGoodOptimizations.RearrangeMath,
     AlwaysGoodOptimizations.RemoveNops,
+    RepeatedIndexCalculationOptimization(true),
+    RepeatedIndexCalculationOptimization(false),
     AlwaysGoodOptimizations.ReplacingArithmeticsWithBitOps,
+    AlwaysGoodOptimizations.ReuseIndex,
     AlwaysGoodOptimizations.ReverseFlowAnalysis,
     AlwaysGoodOptimizations.ShiftingJustWrittenValue,
     AlwaysGoodOptimizations.SimplifiableBitOpsSequence,
@@ -260,6 +269,7 @@ object OptimizationPresets {
     UseAccumulatorInsteadOfYRegister,
     VariableToRegisterOptimization,
     TwoVariablesToIndexRegistersOptimization,
+    LaterOptimizations.BranchlessSignExtension,
   )
 
   val QuickPreset: List[AssemblyOptimization[AssemblyLine]] = List[AssemblyOptimization[AssemblyLine]](
@@ -268,6 +278,8 @@ object OptimizationPresets {
     AlwaysGoodOptimizations.BranchInPlaceRemoval,
     AlwaysGoodOptimizations.CommonBranchBodyOptimization,
     AlwaysGoodOptimizations.CommonExpressionInConditional,
+    RepeatedIndexCalculationOptimization(true),
+    RepeatedIndexCalculationOptimization(false),
     AlwaysGoodOptimizations.CommonIndexSubexpressionElimination,
     AlwaysGoodOptimizations.IndexSequenceOptimization,
     AlwaysGoodOptimizations.PoinlessStoreBeforeStore,
@@ -277,6 +289,7 @@ object OptimizationPresets {
     AlwaysGoodOptimizations.ReverseFlowAnalysis,
     AlwaysGoodOptimizations.SimplifiableCondition,
     LaterOptimizations.DontUseIndexRegisters,
+    AlwaysGoodOptimizations.ReuseIndex,
     VariableToRegisterOptimization,
     TwoVariablesToIndexRegistersOptimization,
     AlwaysGoodOptimizations.PointlessLoadAfterLoadOrStore,

@@ -5,10 +5,10 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Paths}
 import java.util.Locale
 
-import millfork.assembly.m6809.opt.M6809OptimizationPresets
+import millfork.assembly.m6809.opt.{M6809OptimizationPresets, VeryLateM6809AssemblyOptimizations}
 import millfork.assembly.mos.AssemblyLine
 import millfork.assembly.mos.opt._
-import millfork.assembly.z80.opt.Z80OptimizationPresets
+import millfork.assembly.z80.opt.{VeryLateI80AssemblyOptimizations, Z80OptimizationPresets}
 import millfork.buildinfo.BuildInfo
 import millfork.cli.{CliParser, CliStatus}
 import millfork.compiler.LabelGenerator
@@ -17,7 +17,7 @@ import millfork.env.Environment
 import millfork.error.{ConsoleLogger, Logger}
 import millfork.node.StandardCallGraph
 import millfork.output._
-import millfork.parser.{MSourceLoadingQueue, MosSourceLoadingQueue, ZSourceLoadingQueue}
+import millfork.parser.{MSourceLoadingQueue, MosSourceLoadingQueue, TextCodecRepository, ZSourceLoadingQueue}
 
 
 
@@ -56,11 +56,12 @@ object Main {
       errorReporting.warn("Failed to detect the default include directory, consider using the -I option")
     }
 
+    val textCodecRepository = new TextCodecRepository("." :: c.includePath)
     val platform = Platform.lookupPlatformFile("." :: c.includePath, c.platform.getOrElse {
       errorReporting.info("No platform selected, defaulting to `c64`")
       "c64"
-    })
-    val options = CompilationOptions(platform, c.flags, c.outputFileName, c.zpRegisterSize.getOrElse(platform.zpRegisterSize), c.features, JobContext(errorReporting, new LabelGenerator))
+    }, textCodecRepository)
+    val options = CompilationOptions(platform, c.flags, c.outputFileName, c.zpRegisterSize.getOrElse(platform.zpRegisterSize), c.features, textCodecRepository, JobContext(errorReporting, new LabelGenerator))
     errorReporting.debug("Effective flags: ")
     options.flags.toSeq.sortBy(_._1).foreach{
       case (f, b) => errorReporting.debug(f"    $f%-30s : $b%s")
@@ -74,6 +75,20 @@ object Main {
         case _ => "a"
       }
     }
+
+    val outputParent = new File(output).getParentFile
+    if (outputParent ne null) {
+      if (outputParent.exists()) {
+        if (!outputParent.canWrite || !outputParent.isDirectory) {
+          errorReporting.warn(s"The output directory `${outputParent.getAbsolutePath}` cannot be written to.")
+        }
+      } else {
+        if (!outputParent.mkdirs()) {
+          errorReporting.warn(s"Failed to create the output directory `${outputParent.getAbsolutePath}``")
+        }
+      }
+    }
+
     val assOutput = output + ".asm"
 //    val prgOutputs = (platform.outputStyle match {
 //      case OutputStyle.Single => List("default")
@@ -104,21 +119,35 @@ object Main {
         else if (l.startsWith("__")) 7
         else 0
       }
-      val sortedLabels = result.labels.groupBy(_._2).values.map(_.minBy(a => labelUnimportance(a._1) -> a._1)).toSeq.sortBy(_._2)
+      val sortedLabels: Seq[FormattableLabel] =
+        result.labels.groupBy(_._2).values
+          .map(_.minBy(a => labelUnimportance(a._1) -> a._1)).toSeq.sortBy(_._2)
+          .map { case (l, (b, s)) =>
+            val bankNumber = options.platform.bankNumbers.getOrElse(b, 0)
+            val mesenCategory = options.platform.getMesenLabelCategory(b, s)
+            result.endLabels.get(l) match {
+              case Some((c, e)) => FormattableLabel(l, b, bankNumber, s, Some(e), c, mesenCategory)
+              case _ => FormattableLabel(l, b, bankNumber,  s, None, 'x', mesenCategory)
+            }
+          }
+      val sortedBreakpoints = result.breakpoints
       val format = c.outputLabelsFormatOverride.getOrElse(platform.outputLabelsFormat)
       val basename = if (format.addOutputExtension)  output + platform.fileExtension else output
       if (format.filePerBank) {
-        sortedLabels.groupBy(_._2._1).foreach{ case (bank, labels) =>
+        val banks: Set[Int] = sortedLabels.map(_.bankNumber).toSet ++ sortedBreakpoints.map(_._1).toSet
+        banks.foreach{ bank =>
+          val labels = sortedLabels.filter(_.bankNumber.==(bank))
+          val breakpoints = sortedBreakpoints.filter(_._1.==(bank))
           val labelOutput = basename + format.fileExtension(bank)
           val path = Paths.get(labelOutput)
           errorReporting.debug("Writing labels to " + path.toAbsolutePath)
-          Files.write(path, labels.map(format).mkString("\n").getBytes(StandardCharsets.UTF_8))
+          Files.write(path, format.formatAll(result.bankLayoutInFile, labels, breakpoints).getBytes(StandardCharsets.UTF_8))
         }
       } else {
         val labelOutput = basename + format.fileExtension(0)
         val path = Paths.get(labelOutput)
         errorReporting.debug("Writing labels to " + path.toAbsolutePath)
-        Files.write(path, sortedLabels.map(format).mkString("\n").getBytes(StandardCharsets.UTF_8))
+        Files.write(path, format.formatAll(result.bankLayoutInFile, sortedLabels, sortedBreakpoints).getBytes(StandardCharsets.UTF_8))
       }
     }
     val defaultPrgOutput = if (output.endsWith(platform.fileExtension)) output else output + platform.fileExtension
@@ -139,19 +168,33 @@ object Main {
         errorReporting.debug("Writing output to " + path.toAbsolutePath)
         errorReporting.debug(s"Total output size: ${code.length} bytes")
         Files.write(path, code)
+        if (platform.generateBbcMicroInfFile) {
+          val start = platform.codeAllocators(bankName).startAt
+          val codeLength = code.length
+          Files.write(Paths.get(prgOutput +".inf"),
+            f"${path.getFileName}%s ${start}%04X ${start}%04X ${codeLength}%04X".getBytes(StandardCharsets.UTF_8))
+        }
     }
     errorReporting.debug(s"Total time: ${Math.round((System.nanoTime() - startTime)/1e6)} ms")
     c.runFileName.foreach{ program =>
+      if (File.separatorChar == '\\') {
+        if (!new File(program).exists() && !new File(program + ".exe").exists()) {
+          errorReporting.error(s"Program $program does not exist")
+        }
+      } else {
+        if (!new File(program).exists()) {
+          errorReporting.error(s"Program $program does not exist")
+        }
+      }
       val outputAbsolutePath = Paths.get(defaultPrgOutput).toAbsolutePath.toString
-      val cmdline = program +: c.runParams :+ outputAbsolutePath
+      val isBatch = File.separatorChar == '\\' && program.toLowerCase(Locale.ROOT).endsWith(".bat")
+      val cmdline = if (isBatch) {
+        List("cmd", "/c", program) ++ c.runParams :+ outputAbsolutePath
+      } else {
+        program +: c.runParams :+ outputAbsolutePath
+      }
       errorReporting.debug(s"Running: ${cmdline.mkString(" ")}")
       new ProcessBuilder(cmdline.toArray: _*).directory(new File(program).getParentFile).start()
-    }
-    if (platform.generateBbcMicroInfFile) {
-      val start = platform.codeAllocators("default").startAt
-      val codeLength = result.code("default").length
-      Files.write(Paths.get(defaultPrgOutput+".inf"),
-        s"$defaultPrgOutput ${start.toHexString} ${start.toHexString} ${codeLength.toHexString}".getBytes(StandardCharsets.UTF_8))
     }
   }
 
@@ -193,7 +236,7 @@ object Main {
         "zxspectrum", "zxspectrum_8080", "pc88", "cpc464", "msx_crt",
         "cpm", "cpm_z80", "dos_com")
       case Right(path) =>
-        Seq(new File(".").list(), new File(path).list())
+        Seq(new File(".").list(), new File(".", "platform").list(), new File(path).list(), new File(path, "platform").list())
           .filter(_ ne null)
           .flatMap(_.toSeq)
           .filter(_.endsWith(".ini"))
@@ -208,10 +251,10 @@ object Main {
           log.debug(s"Failed to find the default include path: $err")
         case Right(path) =>
           log.debug(s"Automatically detected include path: $path")
-          return c.copy(includePath = List(path) ++ c.extraIncludePath)
+          return c.copy(includePath = List(System.getProperty("user.dir"), path) ++ c.extraIncludePath)
       }
     }
-    c.copy(includePath = c.includePath ++ c.extraIncludePath)
+    c.copy(includePath = System.getProperty("user.dir") :: (c.includePath ++ c.extraIncludePath))
   }
 
   private def assembleForMos(c: Context, platform: Platform, options: CompilationOptions): AssemblerOutput = {
@@ -246,7 +289,7 @@ object Main {
         val extras = List(
           if (options.flag(CompilationFlag.EmitIllegals)) UndocumentedOptimizations.All else Nil,
           if (options.flag(CompilationFlag.Emit65CE02Opcodes)) CE02Optimizations.All else Nil,
-          if (options.flag(CompilationFlag.EmitCmosOpcodes)) CmosOptimizations.All else LaterOptimizations.Nmos,
+          if (options.flag(CompilationFlag.EmitCmosOpcodes)) CmosOptimizations.All else NmosOptimizations.All,
           if (options.flag(CompilationFlag.EmitHudsonOpcodes)) HudsonOptimizations.All else Nil,
           if (options.flag(CompilationFlag.EmitEmulation65816Opcodes)) SixteenOptimizations.AllForEmulation else Nil,
           if (options.flag(CompilationFlag.EmitNative65816Opcodes)) SixteenOptimizations.AllForNative else Nil,
@@ -259,7 +302,7 @@ object Main {
 
     // compile
     val assembler = new MosAssembler(program, env, platform)
-    val result = assembler.assemble(callGraph, assemblyOptimizations, options)
+    val result = assembler.assemble(callGraph, assemblyOptimizations, options, if (optLevel <= 1) (_,_) => Nil else VeryLateMosAssemblyOptimizations.All)
     options.log.assertNoErrors("Codegen failed")
     options.log.debug(f"Unoptimized code size: ${assembler.unoptimizedCodeSize}%5d B")
     options.log.debug(f"Optimized code size:   ${assembler.optimizedCodeSize}%5d B")
@@ -288,7 +331,9 @@ object Main {
     val assemblyOptimizations = optLevel match {
       case 0 => Nil
       case _ =>
-        if (options.flag(CompilationFlag.EmitZ80Opcodes))
+        if (options.flag(CompilationFlag.EmitR800Opcodes))
+          Z80OptimizationPresets.GoodForR800
+        else if (options.flag(CompilationFlag.EmitZ80Opcodes))
           Z80OptimizationPresets.GoodForZ80
         else if (options.flag(CompilationFlag.EmitIntel8080Opcodes))
           Z80OptimizationPresets.GoodForIntel8080
@@ -299,7 +344,7 @@ object Main {
 
     // compile
     val assembler = new Z80Assembler(program, env, platform)
-    val result = assembler.assemble(callGraph, assemblyOptimizations, options)
+    val result = assembler.assemble(callGraph, assemblyOptimizations, options, if (optLevel <= 1) (_,_) => Nil else VeryLateI80AssemblyOptimizations.All)
     options.log.assertNoErrors("Codegen failed")
     options.log.debug(f"Unoptimized code size: ${assembler.unoptimizedCodeSize}%5d B")
     options.log.debug(f"Optimized code size:   ${assembler.optimizedCodeSize}%5d B")
@@ -329,7 +374,7 @@ object Main {
 
     // compile
     val assembler = new M6809Assembler(program, env, platform)
-    val result = assembler.assemble(callGraph, assemblyOptimizations, options)
+    val result = assembler.assemble(callGraph, assemblyOptimizations, options, if (optLevel <= 1) (_,_) => Nil else VeryLateM6809AssemblyOptimizations.All)
     options.log.assertNoErrors("Codegen failed")
     options.log.debug(f"Unoptimized code size: ${assembler.unoptimizedCodeSize}%5d B")
     options.log.debug(f"Optimized code size:   ${assembler.optimizedCodeSize}%5d B")
@@ -362,7 +407,7 @@ object Main {
 
     // compile
     val assembler = new Z80ToX86Crossassembler(program, env, platform)
-    val result = assembler.assemble(callGraph, assemblyOptimizations, options)
+    val result = assembler.assemble(callGraph, assemblyOptimizations, options, if (optLevel <= 1) (_,_) => Nil else VeryLateI80AssemblyOptimizations.All)
     options.log.assertNoErrors("Codegen failed")
     options.log.debug(f"Unoptimized code size: ${assembler.unoptimizedCodeSize}%5d B")
     options.log.debug(f"Optimized code size:   ${assembler.optimizedCodeSize}%5d B")
@@ -381,11 +426,11 @@ object Main {
       c.copy(outputFileName = Some(p))
     }.description("The output file name, without extension.")
 
-    flag("-s").action { c =>
+    flag("-s").repeatable().action { c =>
       c.copy(outputAssembly = true)
     }.description("Generate also the assembly output.")
 
-    flag("-g").action { c =>
+    flag("-g").repeatable().action { c =>
       c.copy(outputLabels = true)
     }.description("Generate also the label file in the default format.")
 
@@ -394,7 +439,11 @@ object Main {
         p.toLowerCase(Locale.ROOT),
         errorReporting.fatal("Invalid label file format: " + p))
       c.copy(outputLabels = true, outputLabelsFormatOverride = Some(f))
-    }.description("Generate also the label file in the given format. Available options: vice, nesasm, sym.")
+    }.description("Generate also the label file in the given format. Available options: vice, nesasm, sym, raw.")
+
+    boolean("-fbreakpoints", "-fno-breakpoints").action((c,v) =>
+      c.changeFlag(CompilationFlag.EnableBreakpoints, v)
+    ).description("Include breakpoints in the label file. Requires either -g or -G.")
 
     parameter("-t", "--target").placeholder("<platform>").action { (p, c) =>
       assertNone(c.platform, "Platform already defined")
@@ -450,25 +499,25 @@ object Main {
       } else {
         errorReporting.fatal("Invalid syntax for -D option")
       }
-    }.description("Define a feature value for the preprocessor.")
+    }.description("Define a feature value for the preprocessor.").maxCount(Integer.MAX_VALUE)
 
-    boolean("-finput_intel_syntax", "-finput_zilog_syntax").action((c,v) =>
+    boolean("-finput_intel_syntax", "-finput_zilog_syntax").repeatable().action((c,v) =>
       c.changeFlag(CompilationFlag.UseIntelSyntaxForInput, v)
     ).description("Select syntax for assembly source input.")
 
-    boolean("-foutput_intel_syntax", "-foutput_zilog_syntax").action((c,v) =>
+    boolean("-foutput_intel_syntax", "-foutput_zilog_syntax").repeatable().action((c,v) =>
       c.changeFlag(CompilationFlag.UseIntelSyntaxForOutput, v)
     ).description("Select syntax for assembly output.")
 
-    boolean("--syntax=intel", "--syntax=zilog").action((c,v) =>
+    boolean("--syntax=intel", "--syntax=zilog").repeatable().action((c,v) =>
       c.changeFlag(CompilationFlag.UseIntelSyntaxForInput, v).changeFlag(CompilationFlag.UseIntelSyntaxForOutput, v)
     ).description("Select syntax for assembly input and output.")
 
-    boolean("-fline-numbers", "-fno-line-numbers").action((c,v) =>
+    boolean("-fline-numbers", "-fno-line-numbers").repeatable().action((c,v) =>
       c.changeFlag(CompilationFlag.LineNumbersInAssembly, v)
     ).description("Show source line numbers in assembly.")
 
-    boolean("-fsource-in-asm", "-fno-source-in-asm").action((c,v) =>
+    boolean("-fsource-in-asm", "-fno-source-in-asm").repeatable().action((c,v) =>
       if (v) {
         c.changeFlag(CompilationFlag.SourceInAssembly, true).changeFlag(CompilationFlag.LineNumbersInAssembly, true)
       } else {
@@ -480,7 +529,7 @@ object Main {
 
     fluff("", "Verbosity options:", "")
 
-    flag("-q", "--quiet").action { c =>
+    flag("-q", "--quiet").repeatable().action { c =>
       assertNone(c.verbosity, "Cannot use -v and -q together")
       c.copy(verbosity = Some(-1))
     }.description("Supress all messages except for errors.")
@@ -495,25 +544,84 @@ object Main {
     fluff("", "Code generation options:", "")
 
     boolean("-fcmos-ops", "-fno-cmos-ops").action { (c, v) =>
-      c.changeFlag(CompilationFlag.EmitCmosOpcodes, v)
-    }.description("Whether should emit CMOS opcodes.")
+      if (v) {
+        c.changeFlag(CompilationFlag.EmitCmosOpcodes, true)
+      } else {
+        c.changeFlag(CompilationFlag.EmitCmosOpcodes, false)
+        c.changeFlag(CompilationFlag.EmitSC02Opcodes, false)
+        c.changeFlag(CompilationFlag.EmitRockwellOpcodes, false)
+        c.changeFlag(CompilationFlag.EmitWdcOpcodes, false)
+        c.changeFlag(CompilationFlag.Emit65CE02Opcodes, false)
+        c.changeFlag(CompilationFlag.EmitHudsonOpcodes, false)
+        c.changeFlag(CompilationFlag.EmitNative65816Opcodes, false)
+        c.changeFlag(CompilationFlag.EmitEmulation65816Opcodes, false)
+      }
+    }.description("Whether should emit the core 65C02 opcodes.")
+    boolean("-f65sc02-ops", "-fno-65sc02-ops").action { (c, v) =>
+      if (v) {
+        c.changeFlag(CompilationFlag.EmitSC02Opcodes, true)
+        c.changeFlag(CompilationFlag.EmitCmosOpcodes, true)
+      } else {
+        c.changeFlag(CompilationFlag.EmitSC02Opcodes, false)
+        c.changeFlag(CompilationFlag.EmitRockwellOpcodes, false)
+        c.changeFlag(CompilationFlag.EmitWdcOpcodes, false)
+        c.changeFlag(CompilationFlag.Emit65CE02Opcodes, false)
+        c.changeFlag(CompilationFlag.EmitHudsonOpcodes, false)
+      }
+    }.description("Whether should emit 65SC02 opcodes.")
+    boolean("-frockwell-ops", "-fno-rockwell-ops").action { (c, v) =>
+      if (v) {
+        c.changeFlag(CompilationFlag.EmitRockwellOpcodes, true)
+        c.changeFlag(CompilationFlag.EmitSC02Opcodes, true)
+        c.changeFlag(CompilationFlag.EmitCmosOpcodes, true)
+      } else {
+        c.changeFlag(CompilationFlag.EmitRockwellOpcodes, false)
+        c.changeFlag(CompilationFlag.EmitWdcOpcodes, false)
+        c.changeFlag(CompilationFlag.Emit65CE02Opcodes, false)
+        c.changeFlag(CompilationFlag.EmitHudsonOpcodes, false)
+      }
+    }.description("Whether should emit Rockwell 65C02 opcodes.")
+    boolean("-fwdc-ops", "-fno-wdc-ops").action { (c, v) =>
+      if (v) {
+        c.changeFlag(CompilationFlag.EmitWdcOpcodes, true)
+        c.changeFlag(CompilationFlag.EmitRockwellOpcodes, true)
+        c.changeFlag(CompilationFlag.EmitSC02Opcodes, true)
+        c.changeFlag(CompilationFlag.EmitCmosOpcodes, true)
+      } else {
+        c.changeFlag(CompilationFlag.EmitWdcOpcodes, false)
+      }
+    }.description("Whether should emit WDC 65C02 opcodes.")
     boolean("-f65ce02-ops", "-fno-65ce02-ops").action { (c, v) =>
-      c.changeFlag(CompilationFlag.Emit65CE02Opcodes, v)
+      if (v) {
+        c.changeFlag(CompilationFlag.Emit65CE02Opcodes, true)
+        c.changeFlag(CompilationFlag.EmitRockwellOpcodes, true)
+        c.changeFlag(CompilationFlag.EmitSC02Opcodes, true)
+        c.changeFlag(CompilationFlag.EmitCmosOpcodes, true)
+      } else {
+        c.changeFlag(CompilationFlag.Emit65CE02Opcodes, false)
+      }
     }.description("Whether should emit 65CE02 opcodes.")
     boolean("-fhuc6280-ops", "-fno-huc6280-ops").action { (c, v) =>
-      c.changeFlag(CompilationFlag.EmitHudsonOpcodes, v)
+      if (v) {
+        c.changeFlag(CompilationFlag.EmitHudsonOpcodes, true)
+        c.changeFlag(CompilationFlag.EmitRockwellOpcodes, true)
+        c.changeFlag(CompilationFlag.EmitSC02Opcodes, true)
+        c.changeFlag(CompilationFlag.EmitCmosOpcodes, true)
+      } else {
+        c.changeFlag(CompilationFlag.EmitCmosOpcodes, false)
+      }
     }.description("Whether should emit HuC6280 opcodes.")
-    flag("-fno-65816-ops").action { c =>
+    flag("-fno-65816-ops").repeatable().action { c =>
       c.changeFlag(CompilationFlag.EmitEmulation65816Opcodes, b = false)
       c.changeFlag(CompilationFlag.EmitNative65816Opcodes, b = false)
       c.changeFlag(CompilationFlag.ReturnWordsViaAccumulator, b = false)
     }.description("Don't emit 65816 opcodes.")
-    flag("-femulation-65816-ops").action { c =>
+    flag("-femulation-65816-ops").repeatable().action { c =>
       c.changeFlag(CompilationFlag.EmitEmulation65816Opcodes, b = true)
       c.changeFlag(CompilationFlag.EmitNative65816Opcodes, b = false)
       c.changeFlag(CompilationFlag.ReturnWordsViaAccumulator, b = false)
     }.description("Emit 65816 opcodes in emulation mode (experimental).")
-    flag("-fnative-65816-ops").action { c =>
+    flag("-fnative-65816-ops").repeatable().action { c =>
       c.changeFlag(CompilationFlag.EmitEmulation65816Opcodes, b = true)
       c.changeFlag(CompilationFlag.EmitNative65816Opcodes, b = true)
     }.description("Emit 65816 opcodes in native mode (very experimental and buggy).")
@@ -554,7 +662,7 @@ object Main {
       c.changeFlag(CompilationFlag.CompactReturnDispatchParams, v)
     }.description("Whether parameter values in return dispatch statements may overlap other objects. Enabled by default.")
     boolean("-fbounds-checking", "-fno-bounds-checking").action { (c, v) =>
-      c.changeFlag(CompilationFlag.VariableOverlap, v)
+      c.changeFlag(CompilationFlag.CheckIndexOutOfBounds, v)
     }.description("Whether should insert bounds checking on array access.")
     boolean("-flenient-encoding", "-fno-lenient-encoding").action { (c, v) =>
       c.changeFlag(CompilationFlag.LenientTextEncoding, v)
@@ -562,17 +670,17 @@ object Main {
     boolean("-fshadow-irq", "-fno-shadow-irq").action { (c, v) =>
       c.changeFlag(CompilationFlag.UseShadowRegistersForInterrupts, v)
     }.description("Whether shadow registers should be used in interrupt routines (Z80 only)")
-    flag("-fuse-ix-for-stack").action { c =>
+    flag("-fuse-ix-for-stack").repeatable().action { c =>
       c.changeFlag(CompilationFlag.UseIxForStack, true).changeFlag(CompilationFlag.UseIyForStack, false)
     }.description("Use IX as base pointer for stack variables (Z80 only)")
-    flag("-fuse-iy-for-stack").action { c =>
+    flag("-fuse-iy-for-stack").repeatable().action { c =>
       c.changeFlag(CompilationFlag.UseIyForStack, true).changeFlag(CompilationFlag.UseIxForStack, false)
     }.description("Use IY as base pointer for stack variables (Z80 only)")
-    flag("-fuse-u-for-stack").action { c =>
-      c.changeFlag(CompilationFlag.UseIxForStack, true).changeFlag(CompilationFlag.UseUForStack, false)
+    flag("-fuse-u-for-stack").repeatable().action { c =>
+      c.changeFlag(CompilationFlag.UseUForStack, true).changeFlag(CompilationFlag.UseYForStack, false)
     }.description("Use U as base pointer for stack variables (6809 only)").hidden()
-    flag("-fuse-y-for-stack").action { c =>
-      c.changeFlag(CompilationFlag.UseIyForStack, true).changeFlag(CompilationFlag.UseYForStack, false)
+    flag("-fuse-y-for-stack").repeatable().action { c =>
+      c.changeFlag(CompilationFlag.UseYForStack, true).changeFlag(CompilationFlag.UseUForStack, false)
     }.description("Use Y as base pointer for stack variables (6809 only)").hidden()
     boolean("-fuse-ix-for-scratch", "-fno-use-ix-for-scratch").action { (c, v) =>
       if (v) {
@@ -588,10 +696,10 @@ object Main {
         c.changeFlag(CompilationFlag.UseIyForScratch, false)
       }
     }.description("Use IY as base pointer for stack variables (Z80 only)")
-    flag("-fno-use-index-for-stack").action { c =>
+    flag("-fno-use-index-for-stack").repeatable().action { c =>
       c.changeFlag(CompilationFlag.UseIyForStack, false).changeFlag(CompilationFlag.UseIxForStack, false)
     }.description("Don't use either IX or IY as base pointer for stack variables (Z80 only)")
-    flag("-fno-use-uy-for-stack").action { c =>
+    flag("-fno-use-uy-for-stack").repeatable().action { c =>
       c.changeFlag(CompilationFlag.UseUForStack, false).changeFlag(CompilationFlag.UseYForStack, false)
     }.description("Don't use either U or Y as base pointer for stack variables (6809 only)").hidden()
     boolean("-fsoftware-stack", "-fno-software-stack").action { (c, v) =>
@@ -601,11 +709,11 @@ object Main {
     fluff("", "Optimization options:", "")
 
 
-    flag("-O0").action { c =>
+    flag("-O0").repeatable().action { c =>
       assertNone(c.optimizationLevel, "Optimization level already defined")
       c.copy(optimizationLevel = Some(0))
     }.description("Disable all optimizations.")
-    flag("-O").action { c =>
+    flag("-O").repeatable().action { c =>
       assertNone(c.optimizationLevel, "Optimization level already defined")
       c.copy(optimizationLevel = Some(1))
     }.description("Optimize code.")
@@ -616,13 +724,16 @@ object Main {
       }.description("Optimize code even more.")
       if (i == 1 || i > 4) f.hidden()
     }
-    flag("--inline").action { c =>
+    boolean("-fhints", "-fnohints").action{ (c,v) =>
+      c.changeFlag(CompilationFlag.UseOptimizationHints, v)
+    }.description("Whether optimization hints should be used.")
+    flag("--inline").repeatable().action { c =>
       c.changeFlag(CompilationFlag.InlineFunctions, true)
     }.description("Inline functions automatically.").hidden()
     boolean("-finline", "-fno-inline").action { (c, v) =>
       c.changeFlag(CompilationFlag.InlineFunctions, v)
     }.description("Inline functions automatically.")
-    flag("--ipo").action { c =>
+    flag("--ipo").repeatable().action { c =>
       c.changeFlag(CompilationFlag.InterproceduralOptimization, true)
     }.description("Interprocedural optimization.").hidden()
     boolean("--fipo", "--fno-ipo").action { (c, v) =>
@@ -646,47 +757,97 @@ object Main {
     boolean("-fregister-variables", "-fno-register-variables").action { (c, v) =>
       c.changeFlag(CompilationFlag.RegisterVariables, v)
     }.description("Allow moving local variables into CPU registers. Enabled by default.")
-    flag("-Os", "--size").action { c =>
+    flag("-Os", "--size").repeatable().action { c =>
       c.changeFlag(CompilationFlag.OptimizeForSize, true).
         changeFlag(CompilationFlag.OptimizeForSpeed, false).
         changeFlag(CompilationFlag.OptimizeForSonicSpeed, false)
     }.description("Prefer smaller code even if it is slightly slower (experimental). Implies -fsubroutine-extraction.")
-    flag("-Of", "--fast").action { c =>
+    flag("-Of", "--fast").repeatable().action { c =>
       c.changeFlag(CompilationFlag.OptimizeForSize, false).
         changeFlag(CompilationFlag.OptimizeForSpeed, true).
         changeFlag(CompilationFlag.OptimizeForSonicSpeed, false)
     }.description("Prefer faster code even if it is slightly bigger (experimental). Implies -finline.")
-    flag("-Ob", "--blast-processing").action { c =>
+    flag("-Ob", "--blast-processing").repeatable().action { c =>
       c.changeFlag(CompilationFlag.OptimizeForSize, false).
         changeFlag(CompilationFlag.OptimizeForSpeed, true).
         changeFlag(CompilationFlag.OptimizeForSonicSpeed, true)
     }.description("Prefer faster code even if it is much bigger (experimental). Implies -finline.")
-    flag("--dangerous-optimizations").action { c =>
+    flag("--dangerous-optimizations").repeatable().action { c =>
       c.changeFlag(CompilationFlag.DangerousOptimizations, true)
     }.description("Use dangerous optimizations (experimental).").hidden()
     boolean("-fdangerous-optimizations", "-fno-dangerous-optimizations").action { (c, v) =>
       c.changeFlag(CompilationFlag.DangerousOptimizations, v)
     }.description("Use dangerous optimizations (experimental). Implies -fipo and -foptimize-stdlib.")
-    flag("-Og", "--optimize-debugging").action { c =>
+    flag("-Og", "--optimize-debugging").repeatable().action { c =>
       c.changeFlag(CompilationFlag.OptimizeForDebugging, true)
     }.description("Disable optimizations that make debugging harder (experimental).")
 
     fluff("", "Warning options:", "")
 
-    flag("-Wall", "--Wall").action { c =>
+    flag("-Wall", "--Wall").repeatable().action { c =>
       CompilationFlag.allWarnings.foldLeft(c) { (c, f) => c.changeFlag(f, true) }
     }.description("Enable extra warnings.")
 
-    flag("-Wfatal", "--Wfatal").action { c =>
+    flag("-Wnone", "--Wnone").repeatable().action { c =>
+      CompilationFlag.allWarnings.foldLeft(c) { (c, f) => c.changeFlag(f, false) }
+    }.description("Disable all warnings.")
+
+    flag("-Wfatal", "--Wfatal").repeatable().action { c =>
       c.changeFlag(CompilationFlag.FatalWarnings, true)
     }.description("Treat warnings as errors.")
+
+    fluff("", "Specific warning options:", "")
+
+    boolean("-Wbuggy", "-Wno-buggy").repeatable().action { (c, v) =>
+      c.changeFlag(CompilationFlag.BuggyCodeWarning, v)
+    }.description("Whether should warn about code that may cause surprising behaviours or even miscompilation. Default: enabled.")
+
+    boolean("-Wdeprecation", "-Wno-deprecation").repeatable().action { (c, v) =>
+      c.changeFlag(CompilationFlag.DeprecationWarning, v)
+    }.description("Whether should warn about deprecated aliases. Default: enabled.")
+
+    boolean("-Wcomparisons", "-Wno-comparisons").repeatable().action { (c, v) =>
+      c.changeFlag(CompilationFlag.BytePointerComparisonWarning, v)
+    }.description("Whether should warn about comparisons between bytes and pointers. Default: enabled.")
+
+    boolean("-Wextra-comparisons", "-Wno-extra-comparisons").repeatable().action { (c, v) =>
+      c.changeFlag(CompilationFlag.ExtraComparisonWarnings, v)
+    }.description("Whether should warn about simplifiable unsigned integer comparisons. Default: disabled.")
+
+    boolean("-Wfallback", "-Wno-fallback").repeatable().action { (c, v) =>
+      c.changeFlag(CompilationFlag.FallbackValueUseWarning, v)
+    }.description("Whether should warn about the use of default values by text codecs, the preprocessor, and array literals. Default: enabled.")
+
+    boolean("-Wmissing-output", "-Wno-missing-output").repeatable().action { (c, v) =>
+      c.changeFlag(CompilationFlag.DataMissingInOutputWarning, v)
+    }.description("Whether should warn about data that is missing in output files. Default: enabled.")
+
+    boolean("-Woverlapping-call", "-Wno-overlapping-call").repeatable().action { (c, v) =>
+      c.changeFlag(CompilationFlag.CallToOverlappingBankWarning, v)
+    }.description("Whether should warn about calls to functions in a different, yet overlapping segment. Default: enabled.")
+
+    boolean("-Wror", "-Wno-ror").repeatable().action { (c, v) =>
+      c.changeFlag(CompilationFlag.RorWarning, v)
+    }.description("Whether should warn about the ROR instruction (6502 only). Default: disabled.")
+
+    boolean("-Woverflow", "-Wno-overflow").repeatable().action { (c, v) =>
+      c.changeFlag(CompilationFlag.ByteOverflowWarning, v)
+    }.description("Whether should warn about byte overflow. Default: enabled.")
+
+    boolean("-Wuseless", "-Wno-useless").repeatable().action { (c, v) =>
+      c.changeFlag(CompilationFlag.UselessCodeWarning, v)
+    }.description("Whether should warn about code that does nothing. Default: enabled.")
+
+    boolean("-Whints", "-Wno-hints").repeatable().action { (c, v) =>
+      c.changeFlag(CompilationFlag.UnsupportedOptimizationHintWarning, v)
+    }.description("Whether should warn about unsupported optimization hints. Default: enabled.")
 
     fluff("", "Other options:", "")
 
     expansion("-Xd")("-O1", "-s", "-fsource-in-asm", "-g").description("Do a debug build. Equivalent to -O1 -s -fsource-in-asm -g")
     expansion("-Xr")("-O4", "-s", "-fsource-in-asm", "-finline", "-fipo", "-foptimize-stdlib").description("Do a release build. Equivalent to -O4 -s -fsource-in-asm -finline -fipo -foptimize-stdlib")
 
-    flag("--single-threaded").action(c =>
+    flag("--single-threaded").repeatable().action(c =>
       c.changeFlag(CompilationFlag.SingleThreaded, true)
     ).description("Run the compiler in a single thread.")
 
@@ -702,7 +863,7 @@ object Main {
       c
     }).description("Display this message.")
 
-    flag("--version").action(c => {
+    flag("--version", "-version").action(c => {
       println("millfork version " + BuildInfo.version)
       assumeStatus(CliStatus.Quit)
       System.exit(0)

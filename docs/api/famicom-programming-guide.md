@@ -36,7 +36,7 @@ The minimal Famicom program thus looks like this:
 To use a mapper of your choice, create a new `.ini` file with the definitions you need.
 The most important ones are `[output]format` and `[allocation]segments`.
 
-Currently, its a bit inconvenient to create programs using mappers that change the bank containing the interrupt vectors.
+Currently, it's a bit inconvenient to create programs using mappers that change the bank containing the interrupt vectors.
 Therefore, it's recommended to stick to mappers that have a fixed bank at the end of the address space.
 
 Mappers that should be fine: NROM (0), CNROM (1), UxROM(2), MMC2 (9), MMC3 (4), MMC4 (10), MMC6 (4).
@@ -60,7 +60,7 @@ just specify them correctly in the `[output]format` tag.
 
 The `[output]format` tag should contain a valid iNES or NES 2.0 header of the mapper of your choice
 and then all the segments in proper order (first PRGROM, then CHRROM).
-See [the MMC4 example](../../include/nes_mmc4.ini) to see how it can be done.
+See [the MMC4 example](https://github.com/KarolS/millfork/blob/master/include/nes_mmc4.ini) to see how it can be done.
 
 See [the NesDev wiki](https://wiki.nesdev.com/w/index.php/NES_2.0) for more info about the NES 2.0 file format.
 

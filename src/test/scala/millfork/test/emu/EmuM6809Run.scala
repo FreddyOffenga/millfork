@@ -7,6 +7,7 @@ import fastparse.core.Parsed.{Failure, Success}
 import millfork._
 import millfork.assembly.AssemblyOptimization
 import millfork.assembly.m6809.MLine
+import millfork.assembly.m6809.opt.VeryLateM6809AssemblyOptimizations
 import millfork.compiler.m6809.M6809Compiler
 import millfork.compiler.{CompilationContext, LabelGenerator}
 import millfork.env.{Environment, InitializedArray, InitializedMemoryVariable, NormalFunction}
@@ -14,8 +15,9 @@ import millfork.error.ConsoleLogger
 import millfork.node.opt.NodeOptimization
 import millfork.node.{Program, StandardCallGraph}
 import millfork.output.{M6809Assembler, MemoryBank}
-import millfork.parser.{M6809Parser, MosParser, PreprocessingResult, Preprocessor, Z80Parser}
-import org.roug.osnine.{BusStraight, MC6809}
+import millfork.parser.{M6809Parser, PreprocessingResult, Preprocessor}
+import org.roug.usim.mc6809.MC6809
+import org.roug.usim.BusStraight
 import org.scalatest.Matchers
 
 import scala.collection.JavaConverters._
@@ -30,12 +32,13 @@ object EmuM6809Run {
     TestErrorReporting.log.info(s"Loading $filename for $cpu")
     val source = Files.readAllLines(Paths.get(filename), StandardCharsets.US_ASCII).asScala.mkString("\n")
     val options = CompilationOptions(EmuPlatform.get(cpu), Map(
+          CompilationFlag.UseUForStack -> true,
           CompilationFlag.LenientTextEncoding -> true
-        ), None, 0, Map(), JobContext(TestErrorReporting.log, new LabelGenerator))
+        ), None, 0, Map(), EmuPlatform.textCodecRepository, JobContext(TestErrorReporting.log, new LabelGenerator))
     val PreprocessingResult(preprocessedSource, features, _) = Preprocessor.preprocessForTest(options, source)
     TestErrorReporting.log.debug(s"Features: $features")
     TestErrorReporting.log.info(s"Parsing $filename")
-    val parser = Z80Parser(filename, preprocessedSource, "", options, features, useIntelSyntax = false)
+    val parser = M6809Parser(filename, preprocessedSource, "", options, features)
     parser.toAst match {
       case Success(x, _) => Some(x)
       case f: Failure[_, _] =>
@@ -52,7 +55,7 @@ object EmuM6809Run {
   private def get(cpu: millfork.Cpu.Value, path: String): Program =
     synchronized { cache.getOrElseUpdate(cpu->path, preload(cpu, path)).getOrElse(throw new IllegalStateException()) }
 
-  def cachedMath(cpu: millfork.Cpu.Value): Program = get(cpu, "include/m6809_math.mfk")
+  def cachedMath(cpu: millfork.Cpu.Value): Program = get(cpu, "include/m6809/m6809_math.mfk")
   def cachedStdio(cpu: millfork.Cpu.Value): Program = get(cpu, "src/test/resources/include/dummy_stdio.mfk")
 }
 
@@ -82,20 +85,24 @@ class EmuM6809Run(cpu: millfork.Cpu.Value, nodeOptimizations: List[NodeOptimizat
     println(source)
     val platform = EmuPlatform.get(cpu)
     val options = CompilationOptions(platform, Map(
+      CompilationFlag.UseOptimizationHints -> true,
       CompilationFlag.EnableInternalTestSyntax -> true,
       CompilationFlag.DecimalMode -> true,
       CompilationFlag.LenientTextEncoding -> true,
       CompilationFlag.EmitIllegals -> this.emitIllegals,
       CompilationFlag.InlineFunctions -> this.inline,
       CompilationFlag.OptimizeStdlib -> this.inline,
+      CompilationFlag.UseUForStack -> true,
       CompilationFlag.InterproceduralOptimization -> true,
       CompilationFlag.CompactReturnDispatchParams -> true,
       CompilationFlag.SubroutineExtraction -> optimizeForSize,
       CompilationFlag.OptimizeForSize -> optimizeForSize,
       CompilationFlag.OptimizeForSpeed -> blastProcessing,
+//      CompilationFlag.SourceInAssembly -> true,
+//      CompilationFlag.LineNumbersInAssembly -> true,
       CompilationFlag.OptimizeForSonicSpeed -> blastProcessing
       //      CompilationFlag.CheckIndexOutOfBounds -> true,
-    ), None, 0, Map(), JobContext(log, new LabelGenerator))
+    ), None, 0, Map(), EmuPlatform.textCodecRepository, JobContext(log, new LabelGenerator))
     log.hasErrors = false
     log.verbosity = 999
     var effectiveSource = source
@@ -112,9 +119,8 @@ class EmuM6809Run(cpu: millfork.Cpu.Value, nodeOptimizations: List[NodeOptimizat
         val withLibraries = {
           var tmp = unoptimized
           if(source.contains("import stdio"))
-            tmp += EmuRun.cachedStdio
-          if(!options.flag(CompilationFlag.DecimalMode) && (source.contains("+'") || source.contains("-'") || source.contains("<<'") || source.contains("*'")))
-            tmp += EmuRun.cachedBcd
+            tmp += EmuM6809Run.cachedStdio(cpu)
+          tmp += EmuM6809Run.cachedMath(cpu)
           tmp
         }
         val program = nodeOptimizations.foldLeft(withLibraries.applyImportantAliases)((p, opt) => p.applyNodeOptimization(opt, options))
@@ -141,14 +147,14 @@ class EmuM6809Run(cpu: millfork.Cpu.Value, nodeOptimizations: List[NodeOptimizat
 
 
         // compile
-        val env2 = new Environment(None, "", CpuFamily.M6502, options)
+        val env2 = new Environment(None, "", CpuFamily.M6809, options)
         env2.collectDeclarations(program, options)
         val assembler = new M6809Assembler(program, env2, platform)
-        val output = assembler.assemble(callGraph, assemblyOptimizations, options)
+        val output = assembler.assemble(callGraph, assemblyOptimizations, options, VeryLateM6809AssemblyOptimizations.All)
         println(";;; compiled: -----------------")
         output.asm.takeWhile(s => !(s.startsWith(".") && s.contains("= $"))).filterNot(_.contains("; DISCARD_")).foreach(println)
         println(";;; ---------------------------")
-        assembler.labelMap.foreach { case (l, (_, addr)) => println(f"$l%-15s $$$addr%04x") }
+        assembler.labelMap.foreach { case (l, (_, addr)) => println(f"$l%-15s $$$addr%04x${assembler.endLabelMap.get(l)match{case Some((c,e)) => f"-$$$e%04x  $c%s"; case _ => ""}}%s") }
 
         val optimizedSize = assembler.mem.banks("default").initialized.count(identity).toLong
         if (unoptimizedSize == optimizedSize) {
@@ -167,6 +173,11 @@ class EmuM6809Run(cpu: millfork.Cpu.Value, nodeOptimizations: List[NodeOptimizat
         if (source.contains("return [")) {
           for (_ <- 0 until 10; i <- 0xfffe.to(0, -1)) {
             if (memoryBank.readable(i)) memoryBank.readable(i + 1) = true
+          }
+        }
+        if (source.contains("w&x")) {
+          for (i <- 0 until 0x10000) {
+            memoryBank.writeable(i) = true
           }
         }
         val timings =  run(log, memoryBank, platform.codeAllocators("default").startAt)

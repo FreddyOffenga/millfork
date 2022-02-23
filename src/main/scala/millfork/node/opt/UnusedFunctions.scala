@@ -20,6 +20,7 @@ object UnusedFunctions extends NodeOptimization {
     ("%%", 0, "__divmod_u16u8u16u8"),
     ("%%", 2, "__mod_u16u8u16u8"),
     ("%%", 2, "__mod_u8u8u8u8"),
+    ("%%", 2, "__divmod_u8u8u8u8"),
     ("%%", 4, "__divmod_u16u16u16u16"),
     ("%%", 4, "__mod_u16u16u16u16"),
     ("%%=", 0, "__divmod_u16u8u16u8"),
@@ -32,6 +33,7 @@ object UnusedFunctions extends NodeOptimization {
     ("/", 2, "__div_u8u8u8u8"),
     ("/", 2, "__mod_u16u8u16u8"),
     ("/", 2, "__mod_u8u8u8u8"),
+    ("/", 2, "__divmod_u8u8u8u8"),
     ("/", 4, "__div_u16u16u16u16"),
     ("/", 4, "__divmod_u16u16u16u16"),
     ("/=", 0, "__divmod_u16u8u16u8"),
@@ -63,8 +65,9 @@ object UnusedFunctions extends NodeOptimization {
       case _ => None
     }.toMap
     val panicRequired = options.flags(CompilationFlag.CheckIndexOutOfBounds)
+    val entrypointNames = options.platform.bankLayouts.values.flatten.toSet + "main"
     val allNormalFunctions = nodes.flatMap {
-      case v: FunctionDeclarationStatement => if (v.address.isDefined && v.statements.isDefined || v.interrupt || v.name == "main" || panicRequired && v.name == "_panic") Nil else List(v.name)
+      case v: FunctionDeclarationStatement => if (v.address.isDefined && v.statements.isDefined || v.interrupt || entrypointNames(v.name) || panicRequired && v.name == "_panic") Nil else List(v.name)
       case _ => Nil
     }.toSet
     var allCalledFunctions = resolveAliases(aliases, getAllCalledFunctions(nodes).toSet)
@@ -82,7 +85,7 @@ object UnusedFunctions extends NodeOptimization {
       }
     }
     if (unusedFunctions.nonEmpty) {
-      options.log.debug("Removing unused functions: " + unusedFunctions.mkString(", "))
+      options.log.debug("Removing unused functions: " + unusedFunctions.toSeq.sorted.mkString(", "))
       optimize(removeFunctionsFromProgram(nodes, unusedFunctions), options)
     } else {
       nodes

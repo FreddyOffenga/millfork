@@ -3,6 +3,7 @@ package millfork
 import millfork.buildinfo.BuildInfo
 import millfork.compiler.LabelGenerator
 import millfork.error.{ConsoleLogger, Logger}
+import millfork.parser.TextCodecRepository
 
 /**
   * @author Karol Stasiak
@@ -12,6 +13,7 @@ case class CompilationOptions(platform: Platform,
                               outputFileName: Option[String],
                               zpRegisterSize: Int,
                               featureOverrides: Map[String, Long],
+                              textCodecRepository: TextCodecRepository,
                               jobContext: JobContext) {
 
   import CompilationFlag._
@@ -36,14 +38,14 @@ case class CompilationOptions(platform: Platform,
     var invalids = Set[CompilationFlag.Value]()
 
     if (CpuFamily.forType(platform.cpu) != CpuFamily.M6502) invalids ++= Set(
-      EmitCmosOpcodes, EmitCmosNopOpcodes, EmitHudsonOpcodes, Emit65CE02Opcodes, EmitEmulation65816Opcodes, EmitNative65816Opcodes, LUnixRelocatableCode,
+      EmitCmosOpcodes, EmitCmosNopOpcodes, EmitHudsonOpcodes, EmitSC02Opcodes, EmitRockwellOpcodes, EmitWdcOpcodes, Emit65CE02Opcodes, EmitEmulation65816Opcodes, EmitNative65816Opcodes, LUnixRelocatableCode,
       PreventJmpIndirectBug, LargeCode, ReturnWordsViaAccumulator, LUnixRelocatableCode, RorWarning, SoftwareStack)
 
     if (CpuFamily.forType(platform.cpu) != CpuFamily.I80 && CpuFamily.forType(platform.cpu) != CpuFamily.I86) invalids ++= Set(
       EmitIntel8085Opcodes, EmitIntel8080Opcodes, UseIxForStack, UseIntelSyntaxForInput, UseIntelSyntaxForOutput)
 
     if (CpuFamily.forType(platform.cpu) != CpuFamily.I80) invalids ++= Set(
-      EmitExtended80Opcodes, EmitZ80Opcodes, EmitSharpOpcodes, EmitEZ80Opcodes, EmitZ80NextOpcodes,
+      EmitExtended80Opcodes, EmitZ80Opcodes, EmitSharpOpcodes, EmitEZ80Opcodes, EmitZ80NextOpcodes, EmitR800Opcodes,
       UseIyForStack, UseIxForScratch, UseIyForScratch, UseShadowRegistersForInterrupts)
 
     if (CpuFamily.forType(platform.cpu) != CpuFamily.M6809) invalids ++= Set(
@@ -170,6 +172,11 @@ case class CompilationOptions(platform: Platform,
             log.error("Extended 8080-like opcodes enabled for architecture that doesn't support them")
           }
         }
+        if (flags(EmitR800Opcodes)) {
+          if (platform.cpu != R800) {
+            log.error("R800 opcodes enabled for architecture that doesn't support them")
+          }
+        }
         if (flags(EmitIntel8080Opcodes)) {
           if (!Intel8080Compatible(platform.cpu)) {
             log.error("Intel 8080 opcodes enabled for architecture that doesn't support them")
@@ -187,6 +194,9 @@ case class CompilationOptions(platform: Platform,
       case CpuFamily.M6809 =>
         if (flags(UseUForStack) && flags(UseYForStack)) {
           log.error("Cannot use both U and Y registers for stack variables simultaneously")
+        }
+        if (!flags(UseUForStack) && !flags(UseYForStack)) {
+          log.error("You need to use either the U register or the Y register as the base pointer. This might be relaxed in the future.")
         }
     }
   }
@@ -215,11 +225,15 @@ case class CompilationOptions(platform: Platform,
       "OPTIMIZE_IPO" -> toLong(flag(CompilationFlag.InterproceduralOptimization)),
       "CPUFEATURE_DECIMAL_MODE" -> toLong(flag(CompilationFlag.DecimalMode)),
       "CPUFEATURE_Z80" -> toLong(flag(CompilationFlag.EmitZ80Opcodes)),
+      "CPUFEATURE_R800" -> toLong(flag(CompilationFlag.EmitR800Opcodes)),
       "CPUFEATURE_EZ80" -> toLong(flag(CompilationFlag.EmitEZ80Opcodes)),
       "CPUFEATURE_8080" -> toLong(flag(CompilationFlag.EmitIntel8080Opcodes)),
       "CPUFEATURE_8085" -> toLong(flag(CompilationFlag.EmitIntel8085Opcodes)),
       "CPUFEATURE_GAMEBOY" -> toLong(flag(CompilationFlag.EmitSharpOpcodes)),
       "CPUFEATURE_65C02" -> toLong(flag(CompilationFlag.EmitCmosOpcodes)),
+      "CPUFEATURE_65SC02" -> toLong(flag(CompilationFlag.EmitSC02Opcodes)),
+      "CPUFEATURE_ROCKWELL_65C02" -> toLong(flag(CompilationFlag.EmitRockwellOpcodes)),
+      "CPUFEATURE_WDC_65C02" -> toLong(flag(CompilationFlag.EmitWdcOpcodes)),
       "CPUFEATURE_65CE02" -> toLong(flag(CompilationFlag.Emit65CE02Opcodes)),
       "CPUFEATURE_HUC6280" -> toLong(flag(CompilationFlag.EmitHudsonOpcodes)),
       "CPUFEATURE_65816_EMULATION" -> toLong(flag(CompilationFlag.EmitEmulation65816Opcodes)),
@@ -281,8 +295,8 @@ object CpuFamily extends Enumeration {
   def forType(cpu: Cpu.Value): CpuFamily.Value = {
     import Cpu._
     cpu match {
-      case Mos | StrictMos | Ricoh | StrictRicoh | Cmos | HuC6280 | CE02 | Sixteen => M6502
-      case Intel8080 | Intel8085 | StrictIntel8085 | Sharp | Z80 | StrictZ80 | EZ80 | Z80Next => I80
+      case Mos | StrictMos | Ricoh | StrictRicoh | Cmos | SC02 | Rockwell | Wdc | HuC6280 | CE02 | Sixteen => M6502
+      case Intel8080 | Intel8085 | StrictIntel8085 | Sharp | Z80 | StrictZ80 | R800 | EZ80 | Z80Next => I80
       case Intel8086 | Intel80186 => I86
       case Cpu.Motorola6809 => M6809
     }
@@ -313,9 +327,21 @@ object Cpu extends Enumeration {
     */
   val StrictRicoh: Cpu.Value = Value
   /**
-    * The WDC 65C02 processor
+    * The base 65C02 processor
     */
   val Cmos: Cpu.Value = Value
+  /**
+    * The 65SC02 processor
+    */
+  val SC02: Cpu.Value = Value
+  /**
+    * The Rockwell 65C02 processor
+    */
+  val Rockwell: Cpu.Value = Value
+  /**
+    * The WDC 65C02 processor
+    */
+  val Wdc: Cpu.Value = Value
   /**
     * The Hudson Soft HuC6280 processor
     */
@@ -349,6 +375,10 @@ object Cpu extends Enumeration {
     */
   val StrictZ80: Cpu.Value = Value
   /**
+    * The R800 CPU (used in MSX Turbo-R)
+    */
+  val R800: Cpu.Value = Value
+  /**
     * The Zilog eZ80 processor
     */
   val EZ80: Cpu.Value = Value
@@ -376,15 +406,15 @@ object Cpu extends Enumeration {
   /**
     * Processors that can run code for WDC 65C02
     */
-  val CmosCompatible: Set[Cpu.Value] = Set(Cmos, HuC6280, CE02, Sixteen)
+  val CmosCompatible: Set[Cpu.Value] = Set(Cmos, HuC6280, CE02, Sixteen, SC02, Rockwell, Wdc)
   /**
     * Processors that can run code for Zilog Z80
     */
-  val Z80Compatible: Set[Cpu.Value] = Set(Z80, StrictZ80, EZ80, Z80Next)
+  val Z80Compatible: Set[Cpu.Value] = Set(Z80, StrictZ80, R800, EZ80, Z80Next)
   /**
     * Processors that can run code for Intel 8080
     */
-  val Intel8080Compatible: Set[Cpu.Value] = Set(Intel8080, Intel8085, StrictIntel8085, Z80, StrictZ80, EZ80, Z80Next)
+  val Intel8080Compatible: Set[Cpu.Value] = Set(Intel8080, Intel8085, StrictIntel8085, Z80, StrictZ80, R800, EZ80, Z80Next)
   /**
     * Processors that can run code for Intel 8085
     */
@@ -393,7 +423,24 @@ object Cpu extends Enumeration {
   import CompilationFlag._
 
   private val alwaysDefaultFlags = Set(
-    VariableOverlap, CompactReturnDispatchParams, FunctionFallthrough, RegisterVariables, FunctionDeduplication
+    VariableOverlap,
+    CompactReturnDispatchParams,
+    FunctionFallthrough,
+    RegisterVariables,
+    FunctionDeduplication,
+    EnableBreakpoints,
+    UseOptimizationHints,
+    GenericWarnings,
+    ByteOverflowWarning,
+    UselessCodeWarning,
+    BuggyCodeWarning,
+    FallbackValueUseWarning,
+    BytePointerComparisonWarning,
+    DeprecationWarning,
+    NonZeroTerminatedLiteralWarning,
+    CallToOverlappingBankWarning,
+    DataMissingInOutputWarning,
+    UnsupportedOptimizationHintWarning,
   )
 
   private val mosAlwaysDefaultFlags = alwaysDefaultFlags
@@ -413,18 +460,26 @@ object Cpu extends Enumeration {
       mosAlwaysDefaultFlags ++ Set(PreventJmpIndirectBug)
     case Cmos =>
       mosAlwaysDefaultFlags ++ Set(DecimalMode, EmitCmosOpcodes)
+    case SC02 =>
+      mosAlwaysDefaultFlags ++ Set(DecimalMode, EmitCmosOpcodes, EmitSC02Opcodes)
+    case Rockwell =>
+      mosAlwaysDefaultFlags ++ Set(DecimalMode, EmitCmosOpcodes, EmitSC02Opcodes, EmitRockwellOpcodes)
+    case Wdc =>
+      mosAlwaysDefaultFlags ++ Set(DecimalMode, EmitCmosOpcodes, EmitSC02Opcodes, EmitRockwellOpcodes, EmitWdcOpcodes)
     case HuC6280 =>
-      mosAlwaysDefaultFlags ++ Set(DecimalMode, EmitCmosOpcodes, EmitHudsonOpcodes)
+      mosAlwaysDefaultFlags ++ Set(DecimalMode, EmitCmosOpcodes, EmitSC02Opcodes, EmitRockwellOpcodes, EmitHudsonOpcodes)
     case CE02 =>
-      mosAlwaysDefaultFlags ++ Set(DecimalMode, EmitCmosOpcodes, Emit65CE02Opcodes)
+      mosAlwaysDefaultFlags ++ Set(DecimalMode, EmitCmosOpcodes, EmitSC02Opcodes, EmitRockwellOpcodes, Emit65CE02Opcodes)
     case Sixteen =>
-      mosAlwaysDefaultFlags ++ Set(DecimalMode, EmitCmosOpcodes, EmitEmulation65816Opcodes, EmitNative65816Opcodes, ReturnWordsViaAccumulator)
+      mosAlwaysDefaultFlags ++ Set(DecimalMode, EmitCmosOpcodes, EmitSC02Opcodes, EmitEmulation65816Opcodes, EmitNative65816Opcodes, ReturnWordsViaAccumulator)
     case Intel8080 =>
       i80AlwaysDefaultFlags ++ Set(EmitIntel8080Opcodes, UseIntelSyntaxForInput, UseIntelSyntaxForOutput)
     case StrictIntel8085 | Intel8085 =>
       i80AlwaysDefaultFlags ++ Set(EmitIntel8080Opcodes, EmitIntel8085Opcodes, UseIntelSyntaxForInput, UseIntelSyntaxForOutput)
     case StrictZ80 | Z80 =>
       i80AlwaysDefaultFlags ++ Set(EmitIntel8080Opcodes, EmitExtended80Opcodes, EmitZ80Opcodes, UseIxForStack, UseShadowRegistersForInterrupts)
+    case R800 =>
+      i80AlwaysDefaultFlags ++ Set(EmitIntel8080Opcodes, EmitExtended80Opcodes, EmitZ80Opcodes, UseIxForStack, UseShadowRegistersForInterrupts, EmitR800Opcodes)
     case Z80Next =>
       i80AlwaysDefaultFlags ++ Set(EmitIntel8080Opcodes, EmitExtended80Opcodes, EmitZ80Opcodes, UseIxForStack, UseShadowRegistersForInterrupts, EmitIllegals, EmitZ80NextOpcodes)
     case EZ80 =>
@@ -446,10 +501,13 @@ object Cpu extends Enumeration {
     case "strict6502" => StrictMos
     case "strict6510" => StrictMos
     case "cmos" => Cmos
-    case "65sc02" => Cmos
-    case "sc02" => Cmos
-    case "65c02" => Cmos
-    case "c02" => Cmos
+    case "65sc02" => SC02
+    case "sc02" => SC02
+    case "65c02" => Rockwell
+    case "c02" => Rockwell
+    case "w65c02" => Wdc
+    case "wdc65c02" => Wdc
+    case "wdc" => Wdc
     case "hudson" => HuC6280
     case "huc6280" => HuC6280
     case "c6280" => HuC6280
@@ -468,7 +526,9 @@ object Cpu extends Enumeration {
     case "strict2a07" => StrictRicoh
     case "z80" => Z80
     case "strictz80" => Z80
+    case "r800" => R800
     case "zx80next" => Z80Next
+    case "z80next" => Z80Next
       // disabled for now:
 //    case "ez80" => EZ80
     case "gameboy"  => Sharp
@@ -512,12 +572,12 @@ object Cpu extends Enumeration {
 object CompilationFlag extends Enumeration {
   val
   // common compilation options:
-  EmitIllegals, DecimalMode, LenientTextEncoding, LineNumbersInAssembly, SourceInAssembly,
+  EmitIllegals, DecimalMode, LenientTextEncoding, LineNumbersInAssembly, SourceInAssembly, EnableBreakpoints,
   // compilation options for MOS:
-  EmitCmosOpcodes, EmitCmosNopOpcodes, EmitHudsonOpcodes, Emit65CE02Opcodes, EmitEmulation65816Opcodes, EmitNative65816Opcodes,
+  EmitCmosOpcodes, EmitCmosNopOpcodes, EmitSC02Opcodes, EmitRockwellOpcodes, EmitWdcOpcodes, EmitHudsonOpcodes, Emit65CE02Opcodes, EmitEmulation65816Opcodes, EmitNative65816Opcodes,
   PreventJmpIndirectBug, LargeCode, ReturnWordsViaAccumulator, SoftwareStack,
   // compilation options for I80
-  EmitIntel8080Opcodes, EmitIntel8085Opcodes, EmitExtended80Opcodes, EmitZ80Opcodes, EmitEZ80Opcodes, EmitSharpOpcodes, EmitZ80NextOpcodes,
+  EmitIntel8080Opcodes, EmitIntel8085Opcodes, EmitExtended80Opcodes, EmitZ80Opcodes, EmitR800Opcodes, EmitEZ80Opcodes, EmitSharpOpcodes, EmitZ80NextOpcodes,
   UseShadowRegistersForInterrupts,
   UseIxForStack, UseIyForStack,
   UseIxForScratch, UseIyForScratch,
@@ -530,6 +590,7 @@ object CompilationFlag extends Enumeration {
   DangerousOptimizations, InlineFunctions, InterproceduralOptimization,
   FunctionFallthrough, RegisterVariables, FunctionDeduplication, SubroutineExtraction,
   OptimizeStdlib,
+  UseOptimizationHints,
   // memory allocation options
   VariableOverlap, CompactReturnDispatchParams, LUnixRelocatableCode,
   // runtime check options
@@ -537,23 +598,50 @@ object CompilationFlag extends Enumeration {
   // special options
   SingleThreaded,
   // warning options
+  GenericWarnings,
+  ByteOverflowWarning,
+  UselessCodeWarning,
+  BuggyCodeWarning,
+  DeprecationWarning,
+  FallbackValueUseWarning,
+  BytePointerComparisonWarning,
   ExtraComparisonWarnings,
   RorWarning,
   NonZeroTerminatedLiteralWarning,
+  CallToOverlappingBankWarning,
+  DataMissingInOutputWarning,
+  UnsupportedOptimizationHintWarning,
   FatalWarnings,
   // special options for internal compiler use
   EnableInternalTestSyntax,
   InternalCurrentlyOptimizingForMeasurement = Value
 
-  val allWarnings: Set[CompilationFlag.Value] = Set(ExtraComparisonWarnings)
+  val allWarnings: Set[CompilationFlag.Value] = Set(
+    GenericWarnings,
+    ByteOverflowWarning,
+    UselessCodeWarning,
+    BuggyCodeWarning,
+    DeprecationWarning,
+    FallbackValueUseWarning,
+    BytePointerComparisonWarning,
+    ExtraComparisonWarnings,
+    NonZeroTerminatedLiteralWarning,
+    CallToOverlappingBankWarning,
+    DataMissingInOutputWarning,
+    UnsupportedOptimizationHintWarning,
+  )
 
   val fromString: Map[String, CompilationFlag.Value] = Map(
     "lunix" -> LUnixRelocatableCode,
     "emit_illegals" -> EmitIllegals,
     "emit_cmos" -> EmitCmosOpcodes,
+    "emit_65sc02" -> EmitSC02Opcodes,
+    "emit_rockwell" -> EmitRockwellOpcodes,
+    "emit_wdc" -> EmitWdcOpcodes,
     "emit_65ce02" -> Emit65CE02Opcodes,
     "emit_huc6280" -> EmitHudsonOpcodes,
     "emit_z80" -> EmitZ80Opcodes,
+    "emit_r800" -> EmitR800Opcodes,
     "emit_ez80" -> EmitEZ80Opcodes,
     "emit_x80" -> EmitExtended80Opcodes,
     "emit_8080" -> EmitIntel8080Opcodes,
@@ -581,6 +669,7 @@ object CompilationFlag extends Enumeration {
     "prevent_jmp_indirect_bug" -> PreventJmpIndirectBug,
     "compact_dispatch_params" -> CompactReturnDispatchParams,
     "lenient_encoding" -> LenientTextEncoding,
+    "breakpoints" -> EnableBreakpoints,
   )
 
 }

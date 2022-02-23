@@ -2,6 +2,11 @@
 
 ### A note about Commodore 64
 
+#### Unusual main function location
+
+If you're creating a prg file and your `main` function may be located at address $2710 hex (10000 decimal) or higher,
+you might need to define the `DISPLACED_MAIN=1` preprocessor feature. 
+
 #### Multifile programs
 
 A multifile program is a program stored on a disk that consists of the main program file that is executed first
@@ -63,7 +68,7 @@ The default segment will be in `OUTPUT.prg`, the segment called `extra` in `OUTP
 The Millfork compiler does not create Commodore disk images.
 
 You can use a variety of tools to perform that task,
-for example the `c1531` tool shipped with [the VICE emulator](http://vice-emu.sourceforge.net/).
+for example the `c1541` tool shipped with [the VICE emulator](http://vice-emu.sourceforge.net/).
 
 To create a new disk image for the last example, use:
 

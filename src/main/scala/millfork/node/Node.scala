@@ -4,13 +4,17 @@ import millfork.assembly.Elidability
 import millfork.assembly.m6809.{MAddrMode, MOpcode}
 import millfork.assembly.mos.opt.SourceOfNZ
 import millfork.assembly.mos.{AddrMode, Opcode}
-import millfork.assembly.z80.{ZOpcode, ZRegisters}
-import millfork.env.{Constant, ParamPassingConvention, Type}
+import millfork.assembly.z80.{NoRegisters, OneRegister, ZOpcode, ZRegisters}
+import millfork.env.{Constant, EnumType, ParamPassingConvention, Type, VariableType}
 import millfork.output.MemoryAlignment
+
+import java.nio.file.Path
 
 case class Position(moduleName: String, line: Int, column: Int, cursor: Int)
 
-case class FieldDesc(typeName:String, fieldName: String)
+case class FieldDesc(typeName:String, fieldName: String, isVolatile: Boolean, arraySize: Option[Expression])
+
+case class ResolvedFieldDesc(typ:VariableType, fieldName: String, isVolatile: Boolean, arrayIndexTypeAndSize: Option[(VariableType, Int)])
 
 sealed trait Node {
   var position: Option[Position] = None
@@ -32,12 +36,14 @@ object Node {
 }
 
 sealed trait Expression extends Node {
+  def renameVariable(variable: String, newVariable: String): Expression
   def replaceVariable(variable: String, actualParam: Expression): Expression
   def replaceIndexedExpression(predicate: IndexedExpression => Boolean, replacement: IndexedExpression => Expression): Expression
   def containsVariable(variable: String): Boolean
   def getPointies: Seq[String]
   def isPure: Boolean
   def getAllIdentifiers: Set[String]
+  def prettyPrint: String
 
   def #+#(smallInt: Int): Expression = if (smallInt == 0) this else (this #+# LiteralExpression(smallInt, 1).pos(this.position)).pos(this.position)
   def #+#(that: Expression): Expression = that match {
@@ -50,65 +56,82 @@ sealed trait Expression extends Node {
   def #-#(that: Expression): Expression = SumExpression(List(false -> this, true -> that), decimal = false)
 
   @transient var typeCache: Type = _
+  @transient var constantValueCache: Option[Constant] = _
 }
 
 case class ConstantArrayElementExpression(constant: Constant) extends Expression {
+  override def renameVariable(variable: String, newVariable: String): Expression = this
   override def replaceVariable(variable: String, actualParam: Expression): Expression = this
   override def replaceIndexedExpression(predicate: IndexedExpression => Boolean, replacement: IndexedExpression => Expression): Expression = this
   override def containsVariable(variable: String): Boolean = false
   override def getPointies: Seq[String] = Seq.empty
   override def isPure: Boolean = true
   override def getAllIdentifiers: Set[String] = Set.empty
+  override def prettyPrint: String = constant.toString
 }
 
 case class LiteralExpression(value: Long, requiredSize: Int) extends Expression {
+  override def renameVariable(variable: String, newVariable: String): Expression = this
   override def replaceVariable(variable: String, actualParam: Expression): Expression = this
   override def replaceIndexedExpression(predicate: IndexedExpression => Boolean, replacement: IndexedExpression => Expression): Expression = this
   override def containsVariable(variable: String): Boolean = false
   override def getPointies: Seq[String] = Seq.empty
   override def isPure: Boolean = true
   override def getAllIdentifiers: Set[String] = Set.empty
+  override def prettyPrint: String = "$" + value.toHexString
 }
 
 case class TextLiteralExpression(characters: List[Expression]) extends Expression {
+  override def renameVariable(variable: String, newVariable: String): Expression = this
   override def replaceVariable(variable: String, actualParam: Expression): Expression = this
   override def replaceIndexedExpression(predicate: IndexedExpression => Boolean, replacement: IndexedExpression => Expression): Expression = this
   override def containsVariable(variable: String): Boolean = false
   override def getPointies: Seq[String] = Seq.empty
   override def isPure: Boolean = true
   override def getAllIdentifiers: Set[String] = Set.empty
+  override def prettyPrint: String = characters.map(_.prettyPrint).mkString("[", ",", "]")
 }
 
 case class GeneratedConstantExpression(value: Constant, typ: Type) extends Expression {
+  override def renameVariable(variable: String, newVariable: String): Expression = this
   override def replaceVariable(variable: String, actualParam: Expression): Expression = this
   override def replaceIndexedExpression(predicate: IndexedExpression => Boolean, replacement: IndexedExpression => Expression): Expression = this
   override def containsVariable(variable: String): Boolean = false
   override def getPointies: Seq[String] = Seq.empty
   override def isPure: Boolean = true
   override def getAllIdentifiers: Set[String] = Set.empty
+  override def prettyPrint: String = value.toString
 }
 
 case class BooleanLiteralExpression(value: Boolean) extends Expression {
+  override def renameVariable(variable: String, newVariable: String): Expression = this
   override def replaceVariable(variable: String, actualParam: Expression): Expression = this
   override def replaceIndexedExpression(predicate: IndexedExpression => Boolean, replacement: IndexedExpression => Expression): Expression = this
   override def containsVariable(variable: String): Boolean = false
   override def getPointies: Seq[String] = Seq.empty
   override def isPure: Boolean = true
   override def getAllIdentifiers: Set[String] = Set.empty
+  override def prettyPrint: String = value.toString
 }
 
 sealed trait LhsExpression extends Expression
 
 case object BlackHoleExpression extends LhsExpression {
+  override def renameVariable(variable: String, newVariable: String): Expression = this
   override def replaceVariable(variable: String, actualParam: Expression): LhsExpression = this
   override def replaceIndexedExpression(predicate: IndexedExpression => Boolean, replacement: IndexedExpression => Expression): Expression = this
   override def containsVariable(variable: String): Boolean = false
   override def getPointies: Seq[String] = Seq.empty
   override def isPure: Boolean = true
   override def getAllIdentifiers: Set[String] = Set.empty
+  override def prettyPrint: String = "(_|_)"
 }
 
 case class SeparateBytesExpression(hi: Expression, lo: Expression) extends LhsExpression {
+  override def renameVariable(variable: String, newVariable: String): Expression =
+    SeparateBytesExpression(
+      hi.renameVariable(variable, newVariable),
+      lo.renameVariable(variable, newVariable)).pos(position)
   def replaceVariable(variable: String, actualParam: Expression): Expression =
     SeparateBytesExpression(
       hi.replaceVariable(variable, actualParam),
@@ -121,9 +144,12 @@ case class SeparateBytesExpression(hi: Expression, lo: Expression) extends LhsEx
   override def getPointies: Seq[String] = hi.getPointies ++ lo.getPointies
   override def isPure: Boolean = hi.isPure && lo.isPure
   override def getAllIdentifiers: Set[String] = hi.getAllIdentifiers ++ lo.getAllIdentifiers
+  override def prettyPrint: String = s"($hi:$lo)"
 }
 
 case class SumExpression(expressions: List[(Boolean, Expression)], decimal: Boolean) extends Expression {
+  override def renameVariable(variable: String, newVariable: String): Expression =
+    SumExpression(expressions.map { case (n, e) => n -> e.renameVariable(variable, newVariable) }, decimal).pos(position)
   override def replaceVariable(variable: String, actualParam: Expression): Expression =
     SumExpression(expressions.map { case (n, e) => n -> e.replaceVariable(variable, actualParam) }, decimal).pos(position)
   override def replaceIndexedExpression(predicate: IndexedExpression => Boolean, replacement: IndexedExpression => Expression): Expression =
@@ -142,24 +168,48 @@ case class SumExpression(expressions: List[(Boolean, Expression)], decimal: Bool
   override def #-#(that: Expression): Expression =
     if (decimal) super.#-#(that)
     else SumExpression(expressions :+ (true -> that), decimal = false)
+  override def prettyPrint: String = '(' + expressions.map{case(neg, e) => (if (neg) "- " else "+ ") + e.prettyPrint}.mkString("", " ", ")").stripPrefix("+ ")
 }
 
 case class FunctionCallExpression(functionName: String, expressions: List[Expression]) extends Expression {
-  override def replaceVariable(variable: String, actualParam: Expression): Expression =
-    FunctionCallExpression(functionName, expressions.map {
-      _.replaceVariable(variable, actualParam)
+  override def renameVariable(variable: String, newVariable: String): Expression =
+    FunctionCallExpression(if (functionName == variable) newVariable else functionName, expressions.map {
+      _.renameVariable(variable, newVariable)
     }).pos(position)
-  override def replaceIndexedExpression(predicate: IndexedExpression => Boolean, replacement: IndexedExpression => Expression): Expression = 
+  override def replaceVariable(variable: String, actualParam: Expression): Expression = {
+    if (variable == functionName) {
+        actualParam match {
+          case VariableExpression(v) =>
+            FunctionCallExpression(v, expressions.map {
+              _.replaceVariable(variable, actualParam)
+            }).pos(position)
+          case _ =>
+            ??? // TODO
+        }
+    } else {
+      FunctionCallExpression(functionName, expressions.map {
+        _.replaceVariable(variable, actualParam)
+      }).pos(position)
+    }
+  }
+
+  override def replaceIndexedExpression(predicate: IndexedExpression => Boolean, replacement: IndexedExpression => Expression): Expression =
     FunctionCallExpression(functionName, expressions.map {
       _.replaceIndexedExpression(predicate, replacement)
     }).pos(position)
-  override def containsVariable(variable: String): Boolean = expressions.exists(_.containsVariable(variable))
+  override def containsVariable(variable: String): Boolean = variable == functionName || expressions.exists(_.containsVariable(variable))
   override def getPointies: Seq[String] = expressions.flatMap(_.getPointies)
   override def isPure: Boolean = false // TODO
   override def getAllIdentifiers: Set[String] = expressions.map(_.getAllIdentifiers).fold(Set[String]())(_ ++ _) + functionName
+  override def prettyPrint: String =
+    if (expressions.size != 2 || functionName.exists(Character.isAlphabetic(_)))
+      functionName + expressions.map(_.prettyPrint).mkString("(", ", ", ")")
+    else s"(${expressions.head.prettyPrint} $functionName ${expressions(1).prettyPrint}"
 }
 
 case class HalfWordExpression(expression: Expression, hiByte: Boolean) extends Expression {
+  override def renameVariable(variable: String, newVariable: String): Expression =
+    HalfWordExpression(expression.renameVariable(variable, newVariable), hiByte).pos(position)
   override def replaceVariable(variable: String, actualParam: Expression): Expression =
     HalfWordExpression(expression.replaceVariable(variable, actualParam), hiByte).pos(position)
   override def replaceIndexedExpression(predicate: IndexedExpression => Boolean, replacement: IndexedExpression => Expression): Expression = 
@@ -168,6 +218,7 @@ case class HalfWordExpression(expression: Expression, hiByte: Boolean) extends E
   override def getPointies: Seq[String] = expression.getPointies
   override def isPure: Boolean = expression.isPure
   override def getAllIdentifiers: Set[String] = expression.getAllIdentifiers
+  override def prettyPrint: String = '(' + expression.prettyPrint + (if (hiByte) ").hi" else ").lo")
 }
 
 sealed class NiceFunctionProperty(override val toString: String)
@@ -175,6 +226,7 @@ sealed class NiceFunctionProperty(override val toString: String)
 object NiceFunctionProperty {
   case object DoesntReadMemory extends NiceFunctionProperty("MR")
   case object DoesntWriteMemory extends NiceFunctionProperty("MW")
+  case object Idempotent extends NiceFunctionProperty("Idem")
   case object IsLeaf extends NiceFunctionProperty("LEAF")
 }
 
@@ -196,9 +248,11 @@ object MosNiceFunctionProperty {
 }
 
 object Z80NiceFunctionProperty {
+  case object DoesntChangeA extends NiceFunctionProperty("A")
   case object DoesntChangeBC extends NiceFunctionProperty("BC")
   case object DoesntChangeDE extends NiceFunctionProperty("DE")
   case object DoesntChangeHL extends NiceFunctionProperty("HL")
+  case object DoesntChangeCF extends NiceFunctionProperty("CF")
   case object DoesntChangeIY extends NiceFunctionProperty("IY")
   case class SetsATo(value: Int) extends NiceFunctionProperty("A=" + value)
 }
@@ -209,6 +263,7 @@ object M6809NiceFunctionProperty {
   case object DoesntChangeX extends NiceFunctionProperty("X")
   case object DoesntChangeY extends NiceFunctionProperty("Y")
   case object DoesntChangeU extends NiceFunctionProperty("U")
+  case object DoesntChangeDP extends NiceFunctionProperty("DP")
   case object DoesntChangeCF extends NiceFunctionProperty("C")
   case class SetsBTo(value: Int) extends NiceFunctionProperty("B=" + value)
 }
@@ -265,16 +320,44 @@ object M6809Register extends Enumeration {
 //case class Indexing(child: Expression, register: Register.Value) extends Expression
 
 case class VariableExpression(name: String) extends LhsExpression {
+  override def renameVariable(variable: String, newVariable: String): Expression =
+    if (name == variable)
+      VariableExpression(newVariable).pos(position)
+    else if (name.startsWith(variable) && name(variable.length) == '.')
+      VariableExpression(newVariable + name.stripPrefix(variable)).pos(position)
+    else this
   override def replaceVariable(variable: String, actualParam: Expression): Expression =
-    if (name == variable) actualParam else this
+    if (name == variable) actualParam
+    else if (name.startsWith(variable) && name(variable.length) == '.') {
+      actualParam match {
+        case VariableExpression(newVariable) => this.renameVariable(variable, newVariable)
+        case _ =>
+          name.stripPrefix(variable) match {
+            case ".lo" => FunctionCallExpression("lo", List(this)).pos(position)
+            case ".hi" => FunctionCallExpression("hi", List(this)).pos(position)
+            case _ => ??? // TODO
+          }
+      }
+    } else this
   override def replaceIndexedExpression(predicate: IndexedExpression => Boolean, replacement: IndexedExpression => Expression): Expression = this
   override def containsVariable(variable: String): Boolean = name == variable
   override def getPointies: Seq[String] = if (name.endsWith(".addr.lo")) Seq(name.stripSuffix(".addr.lo")) else Seq.empty
   override def isPure: Boolean = true
   override def getAllIdentifiers: Set[String] = Set(name)
+  override def prettyPrint: String = name
 }
 
 case class IndexedExpression(name: String, index: Expression) extends LhsExpression {
+  override def renameVariable(variable: String, newVariable: String): Expression = {
+    val newIndex = index.renameVariable(variable, newVariable)
+    if (name == variable)
+      IndexedExpression(newVariable, newIndex).pos(position)
+    else if (name.startsWith(variable) && name(variable.length) == '.')
+      IndexedExpression(newVariable + name.stripPrefix(variable), newIndex).pos(position)
+    else
+      IndexedExpression(name, newIndex).pos(position)
+  }
+
   override def replaceVariable(variable: String, actualParam: Expression): Expression =
     if (name == variable) {
       actualParam match {
@@ -290,9 +373,15 @@ case class IndexedExpression(name: String, index: Expression) extends LhsExpress
   override def getPointies: Seq[String] = Seq(name)
   override def isPure: Boolean = index.isPure
   override def getAllIdentifiers: Set[String] = index.getAllIdentifiers + name
+  override def prettyPrint: String = s"$name[${index.prettyPrint}]"
 }
 
 case class IndirectFieldExpression(root: Expression, firstIndices: Seq[Expression], fields: Seq[(Boolean, String, Seq[Expression])]) extends LhsExpression {
+  override def renameVariable(variable: String, newVariable: String): Expression =
+    IndirectFieldExpression(
+      root.renameVariable(variable, newVariable),
+      firstIndices.map(_.renameVariable(variable, newVariable)),
+      fields.map{case (dot, f, i) => (dot, f, i.map(_.renameVariable(variable, newVariable)))})
   override def replaceVariable(variable: String, actualParam: Expression): Expression =
     IndirectFieldExpression(
       root.replaceVariable(variable, actualParam),
@@ -318,11 +407,17 @@ case class IndirectFieldExpression(root: Expression, firstIndices: Seq[Expressio
   override def isPure: Boolean = root.isPure && firstIndices.forall(_.isPure) && fields.forall(_._3.forall(_.isPure))
 
   override def getAllIdentifiers: Set[String] = root.getAllIdentifiers ++ firstIndices.flatMap(_.getAllIdentifiers) ++ fields.flatMap(_._3.flatMap(_.getAllIdentifiers))
+
+  override def prettyPrint: String = root.prettyPrint +
+    firstIndices.map(i => '[' + i.prettyPrint + ']').mkString("") +
+    fields.map{case (dot, f, ixs) => (if (dot) "." else "->") + f + ixs.map(i => '[' + i.prettyPrint + ']').mkString("")}
 }
 
 case class DerefDebuggingExpression(inner: Expression, preferredSize: Int) extends LhsExpression {
+  override def renameVariable(variable: String, newVariable: String): Expression = DerefDebuggingExpression(inner.renameVariable(variable, newVariable), preferredSize)
+
   override def replaceVariable(variable: String, actualParam: Expression): Expression = DerefDebuggingExpression(inner.replaceVariable(variable, actualParam), preferredSize)
-  
+
   override def replaceIndexedExpression(predicate: IndexedExpression => Boolean, replacement: IndexedExpression => Expression): Expression =
     DerefDebuggingExpression(inner.replaceIndexedExpression(predicate, replacement), preferredSize)
 
@@ -336,13 +431,15 @@ case class DerefDebuggingExpression(inner: Expression, preferredSize: Int) exten
   override def isPure: Boolean = inner.isPure
 
   override def getAllIdentifiers: Set[String] = inner.getAllIdentifiers
+  override def prettyPrint: String = s"¥deref(${inner.prettyPrint})"
 }
 
-case class DerefExpression(inner: Expression, offset: Int, targetType: Type) extends LhsExpression {
-  override def replaceVariable(variable: String, actualParam: Expression): Expression = DerefExpression(inner.replaceVariable(variable, actualParam), offset, targetType)
+case class DerefExpression(inner: Expression, offset: Int, isVolatile: Boolean, targetType: Type) extends LhsExpression {
+  override def renameVariable(variable: String, newVariable: String): Expression = DerefExpression(inner.renameVariable(variable, newVariable), offset, isVolatile, targetType)
+  override def replaceVariable(variable: String, actualParam: Expression): Expression = DerefExpression(inner.replaceVariable(variable, actualParam), offset, isVolatile, targetType)
 
   override def replaceIndexedExpression(predicate: IndexedExpression => Boolean, replacement: IndexedExpression => Expression): Expression =
-    DerefExpression(inner.replaceIndexedExpression(predicate, replacement), offset, targetType)
+    DerefExpression(inner.replaceIndexedExpression(predicate, replacement), offset, isVolatile, targetType)
 
   override def containsVariable(variable: String): Boolean = inner.containsVariable(variable)
 
@@ -354,6 +451,7 @@ case class DerefExpression(inner: Expression, offset: Int, targetType: Type) ext
   override def isPure: Boolean = inner.isPure
 
   override def getAllIdentifiers: Set[String] = inner.getAllIdentifiers
+  override def prettyPrint: String = s"¥deref(${inner.prettyPrint})"
 }
 
 sealed trait Statement extends Node {
@@ -369,6 +467,7 @@ sealed trait DeclarationStatement extends Statement {
 sealed trait BankedDeclarationStatement extends DeclarationStatement {
   def bank: Option[String]
   def name: String
+  def optimizationHints: Set[String]
   def withChangedBank(bank: String): BankedDeclarationStatement
 }
 
@@ -386,19 +485,44 @@ case class VariableDeclarationStatement(name: String,
                                         register: Boolean,
                                         initialValue: Option[Expression],
                                         address: Option[Expression],
+                                        optimizationHints: Set[String],
                                         alignment: Option[MemoryAlignment]) extends BankedDeclarationStatement {
   override def getAllExpressions: List[Expression] = List(initialValue, address).flatten
 
   override def withChangedBank(bank: String): BankedDeclarationStatement = copy(bank = Some(bank))
+
+  def replaceVariableInInitialValue(variable: String, expression: Expression): VariableDeclarationStatement = initialValue match {
+    case Some(v) => copy(initialValue = Some(v.replaceVariable(variable, expression)))
+    case None => this
+  }
 }
 
 trait ArrayContents extends Node {
   def getAllExpressions(bigEndian: Boolean): List[Expression]
+  def renameVariable(variableToRename: String, newVariable: String): ArrayContents
   def replaceVariable(variableToReplace: String, expression: Expression): ArrayContents
+}
+
+case class FileChunkContents(filePath: Path, start: Expression, length: Option[Expression]) extends ArrayContents {
+  def getAllExpressions(bigEndian: Boolean): List[Expression] = length match {
+    case Some(l) => List(start, l)
+    case None => List(start)
+  }
+  def renameVariable(variableToRename: String, newVariable: String): ArrayContents =
+    FileChunkContents(filePath,
+      start.renameVariable(variableToRename, newVariable),
+      length.map(_.renameVariable(variableToRename, newVariable)))
+  def replaceVariable(variableToReplace: String, expression: Expression): ArrayContents =
+    FileChunkContents(filePath,
+      start.replaceVariable(variableToReplace, expression),
+      length.map(_.replaceVariable(variableToReplace, expression)))
 }
 
 case class LiteralContents(contents: List[Expression]) extends ArrayContents {
   override def getAllExpressions(bigEndian: Boolean): List[Expression] = contents
+
+  override def renameVariable(variableToRename: String, newVariable: String): ArrayContents =
+    LiteralContents(contents.map(_.renameVariable(variableToRename, newVariable)))
 
   override def replaceVariable(variable: String, expression: Expression): ArrayContents =
     LiteralContents(contents.map(_.replaceVariable(variable, expression)))
@@ -406,6 +530,14 @@ case class LiteralContents(contents: List[Expression]) extends ArrayContents {
 
 case class ForLoopContents(variable: String, start: Expression, end: Expression, direction: ForDirection.Value, body: ArrayContents) extends ArrayContents {
   override def getAllExpressions(bigEndian: Boolean): List[Expression] = start :: end :: body.getAllExpressions(bigEndian).map(_.replaceVariable(variable, LiteralExpression(0, 1)))
+
+  override def renameVariable(variableToRename: String, newVariable: String): ArrayContents =
+    if (variableToRename == variable) this else ForLoopContents(
+      variable,
+      start.renameVariable(variableToRename, newVariable),
+      end.renameVariable(variableToRename, newVariable),
+      direction,
+      body.renameVariable(variableToRename, newVariable))
 
   override def replaceVariable(variableToReplace: String, expression: Expression): ArrayContents =
     if (variableToReplace == variable) this else ForLoopContents(
@@ -418,6 +550,9 @@ case class ForLoopContents(variable: String, start: Expression, end: Expression,
 
 case class CombinedContents(contents: List[ArrayContents]) extends ArrayContents {
   override def getAllExpressions(bigEndian: Boolean): List[Expression] = contents.flatMap(_.getAllExpressions(bigEndian))
+
+  override def renameVariable(variableToRename: String, newVariable: String): ArrayContents =
+    CombinedContents(contents.map(_.renameVariable(variableToRename, newVariable)))
 
   override def replaceVariable(variableToReplace: String, expression: Expression): ArrayContents =
     CombinedContents(contents.map(_.replaceVariable(variableToReplace, expression)))
@@ -457,6 +592,9 @@ case class ProcessedContents(processor: String, values: ArrayContents) extends A
     case "struct" => values.getAllExpressions(bigEndian) // not used for emitting actual arrays
   }
 
+  override def renameVariable(variableToRename: String, newVariable: String): ArrayContents =
+    ProcessedContents(processor, values.renameVariable(variableToRename, newVariable))
+
   override def replaceVariable(variableToReplace: String, expression: Expression): ArrayContents =
     ProcessedContents(processor, values.replaceVariable(variableToReplace, expression))
 }
@@ -469,11 +607,11 @@ case class EnumDefinitionStatement(name: String, variants: List[(String, Option[
   override def getAllExpressions: List[Expression] = variants.flatMap(_._2)
 }
 
-case class StructDefinitionStatement(name: String, fields: List[FieldDesc]) extends DeclarationStatement {
+case class StructDefinitionStatement(name: String, fields: List[FieldDesc], alignment: Option[MemoryAlignment]) extends DeclarationStatement {
   override def getAllExpressions: List[Expression] = Nil
 }
 
-case class UnionDefinitionStatement(name: String, fields: List[FieldDesc]) extends DeclarationStatement {
+case class UnionDefinitionStatement(name: String, fields: List[FieldDesc], alignment: Option[MemoryAlignment]) extends DeclarationStatement {
   override def getAllExpressions: List[Expression] = Nil
 }
 
@@ -484,6 +622,7 @@ case class ArrayDeclarationStatement(name: String,
                                      address: Option[Expression],
                                      const: Boolean,
                                      elements: Option[ArrayContents],
+                                     optimizationHints: Set[String],
                                      alignment: Option[MemoryAlignment],
                                      bigEndian: Boolean) extends BankedDeclarationStatement {
   override def getAllExpressions: List[Expression] = List(length, address).flatten ++ elements.fold(List[Expression]())(_.getAllExpressions(bigEndian))
@@ -494,7 +633,7 @@ case class ArrayDeclarationStatement(name: String,
 case class ParameterDeclaration(typ: String,
                                 assemblyParamPassingConvention: ParamPassingConvention) extends Node
 
-case class ImportStatement(filename: String) extends DeclarationStatement {
+case class ImportStatement(filename: String, templateParams: List[String]) extends DeclarationStatement {
   override def getAllExpressions: List[Expression] = Nil
 
   override def name: String = ""
@@ -505,6 +644,7 @@ case class FunctionDeclarationStatement(name: String,
                                         params: List[ParameterDeclaration],
                                         bank: Option[String],
                                         address: Option[Expression],
+                                        optimizationHints: Set[String],
                                         alignment: Option[MemoryAlignment],
                                         statements: Option[List[Statement]],
                                         isMacro: Boolean,
@@ -512,13 +652,28 @@ case class FunctionDeclarationStatement(name: String,
                                         assembly: Boolean,
                                         interrupt: Boolean,
                                         kernalInterrupt: Boolean,
+                                        constPure: Boolean,
                                         reentrant: Boolean) extends BankedDeclarationStatement {
   override def getAllExpressions: List[Expression] = address.toList ++ statements.getOrElse(Nil).flatMap(_.getAllExpressions)
 
   override def withChangedBank(bank: String): BankedDeclarationStatement = copy(bank = Some(bank))
+
+  override def getAllPointies: Seq[String] = statements match {
+    case None => Seq.empty
+    case Some(stmts) =>
+      val locals = stmts.flatMap{
+        case s:VariableDeclarationStatement => Some(s.name)
+        case s:ArrayDeclarationStatement => Some(s.name)
+        case _ => None
+      }.toSet
+      val pointies = stmts.flatMap(_.getAllPointies).toSet
+      (pointies -- locals).toSeq
+  }
 }
 
-sealed trait ExecutableStatement extends Statement
+sealed trait ExecutableStatement extends Statement {
+  def isValidFunctionEnd: Boolean = false
+}
 
 case class RawBytesStatement(contents: ArrayContents, bigEndian: Boolean) extends ExecutableStatement {
   override def getAllExpressions: List[Expression] = contents.getAllExpressions(bigEndian)
@@ -538,10 +693,12 @@ case class ExpressionStatement(expression: Expression) extends ExecutableStateme
 
 case class ReturnStatement(value: Option[Expression]) extends ExecutableStatement {
   override def getAllExpressions: List[Expression] = value.toList
+  override def isValidFunctionEnd: Boolean = true
 }
 
 case class GotoStatement(target: Expression) extends ExecutableStatement {
   override def getAllExpressions: List[Expression] = List(target)
+  override def isValidFunctionEnd: Boolean = true
 }
 
 case class LabelStatement(name: String) extends ExecutableStatement {
@@ -565,7 +722,7 @@ case class StandardReturnDispatchLabel(labels:List[Expression]) extends ReturnDi
 }
 
 case class ReturnDispatchBranch(label: ReturnDispatchLabel, function: Expression, params: List[Expression]) extends Node {
-  def getAllExpressions: List[Expression] = label.getAllExpressions ++ params
+  def getAllExpressions: List[Expression] = label.getAllExpressions ++ params :+ function
 }
 
 case class ReturnDispatchStatement(indexer: Expression, params: List[LhsExpression], branches: List[ReturnDispatchBranch]) extends ExecutableStatement {
@@ -586,14 +743,24 @@ case class MosAssemblyStatement(opcode: Opcode.Value, addrMode: AddrMode.Value, 
       expression.getAllIdentifiers.toSeq.filter(i => !i.contains('.') || i.endsWith(".addr") || i.endsWith(".addr.lo")).map(_.takeWhile(_ != '.'))
     case _ => Seq.empty
   }
+  override def isValidFunctionEnd: Boolean = opcode == Opcode.RTS || opcode == Opcode.RTI || opcode == Opcode.JMP || opcode == Opcode.BRA
 }
 
 case class Z80AssemblyStatement(opcode: ZOpcode.Value, registers: ZRegisters, offsetExpression: Option[Expression], expression: Expression, elidability: Elidability.Value) extends ExecutableStatement {
   override def getAllExpressions: List[Expression] = List(expression)
+
+  override def isValidFunctionEnd: Boolean = registers match {
+    case NoRegisters | OneRegister(_) =>
+      opcode == ZOpcode.RETN || opcode == ZOpcode.RETI || opcode == ZOpcode.JP
+    case _ =>
+      false
+  }
 }
 
 case class M6809AssemblyStatement(opcode: MOpcode.Value, addrMode: MAddrMode, expression: Expression, elidability: Elidability.Value) extends ExecutableStatement {
   override def getAllExpressions: List[Expression] = List(expression)
+
+  override def isValidFunctionEnd: Boolean = opcode == MOpcode.RTS || opcode == MOpcode.JMP || opcode == MOpcode.BRA || opcode == MOpcode.RTI
 }
 
 case class IfStatement(condition: Expression, thenBranch: List[ExecutableStatement], elseBranch: List[ExecutableStatement]) extends CompoundStatement {
@@ -609,6 +776,8 @@ case class IfStatement(condition: Expression, thenBranch: List[ExecutableStateme
   }
 
   override def loopVariable: String = "-none-"
+
+  override def isValidFunctionEnd: Boolean = thenBranch.lastOption.fold(false)(_.isValidFunctionEnd) && elseBranch.lastOption.fold(false)(_.isValidFunctionEnd)
 }
 
 case class WhileStatement(condition: Expression, body: List[ExecutableStatement], increment: List[ExecutableStatement], labels: Set[String] = Set("", "while")) extends CompoundStatement {
@@ -630,27 +799,44 @@ object ForDirection extends Enumeration {
   val To, Until, DownTo, ParallelTo, ParallelUntil = Value
 }
 
-case class ForStatement(variable: String, start: Expression, end: Expression, direction: ForDirection.Value, body: List[ExecutableStatement]) extends CompoundStatement {
-  override def getAllExpressions: List[Expression] = VariableExpression(variable) :: start :: end :: body.flatMap(_.getAllExpressions)
+case class ForStatement(variable: String, start: Expression, end: Expression, direction: ForDirection.Value, body: List[ExecutableStatement], extraIncrement: List[ExecutableStatement] = Nil) extends CompoundStatement {
+  override def getAllExpressions: List[Expression] = VariableExpression(variable) :: start :: end :: (body.flatMap(_.getAllExpressions) ++ extraIncrement.flatMap(_.getAllExpressions))
 
-  override def getChildStatements: Seq[Statement] = body
+  override def getChildStatements: Seq[Statement] = body ++ extraIncrement
 
   override def flatMap(f: ExecutableStatement => Option[ExecutableStatement]): Option[ExecutableStatement] = {
     val b = body.map(f)
-    if (b.forall(_.isDefined)) Some(ForStatement(variable, start, end, direction, b.map(_.get)).pos(this.position))
+    val i = extraIncrement.map(f)
+    if (b.forall(_.isDefined) && i.forall(_.isDefined)) Some(ForStatement(variable, start, end, direction, b.map(_.get), i.map(_.get)).pos(this.position))
     else None
   }
 
   override def loopVariable: String = variable
 }
 
-case class ForEachStatement(variable: String, values: Either[Expression, List[Expression]], body: List[ExecutableStatement]) extends CompoundStatement {
-  override def getAllExpressions: List[Expression] = VariableExpression(variable) :: (values.fold[List[Expression]](_ => Nil, identity) ++ body.flatMap(_.getAllExpressions))
+case class MemsetStatement(start: Expression, size: Constant, value: Expression, direction: ForDirection.Value, original: Option[ForStatement]) extends CompoundStatement {
+  if (original.isEmpty && direction != ForDirection.ParallelUntil) {
+    throw new IllegalArgumentException
+  }
+  override def getAllExpressions: List[Expression] = List(start, value) ++ original.toList.flatMap(_.getAllExpressions)
+
+  override def getChildStatements: Seq[Statement] = original.toList.flatMap(_.getChildStatements)
+
+  override def flatMap(f: ExecutableStatement => Option[ExecutableStatement]): Option[ExecutableStatement] =
+    // shouldn't ever yield None, as this is possible only in case of control-flow changing statements:
+    Some(copy(original = original.flatMap(_.flatMap(f).asInstanceOf[Option[ForStatement]])))
+
+
+  override def loopVariable: String = original.fold("_none")(_.loopVariable)
+}
+
+case class ForEachStatement(variable: String, pointerVariable: Option[String], values: Either[Expression, List[Expression]], body: List[ExecutableStatement]) extends CompoundStatement {
+  override def getAllExpressions: List[Expression] = VariableExpression(variable) :: (pointerVariable.map(VariableExpression).toList ++ values.fold[List[Expression]](List(_), identity) ++ body.flatMap(_.getAllExpressions))
 
   override def getChildStatements: Seq[Statement] = body
   override def flatMap(f: ExecutableStatement => Option[ExecutableStatement]): Option[ExecutableStatement] = {
     val b = body.map(f)
-    if (b.forall(_.isDefined)) Some(ForEachStatement(variable,values, b.map(_.get)).pos(this.position))
+    if (b.forall(_.isDefined)) Some(ForEachStatement(variable, pointerVariable, values, b.map(_.get)).pos(this.position))
     else None
   }
 

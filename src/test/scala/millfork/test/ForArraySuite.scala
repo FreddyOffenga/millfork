@@ -39,8 +39,40 @@ class ForArraySuite extends FunSuite with Matchers {
       """.stripMargin
     val m = EmuSuperOptimizedRun(src)
     m.readByte(0xc000) should equal(18)
-    EmuCrossPlatformBenchmarkRun(Cpu.Cmos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(src) { m =>
+    EmuCrossPlatformBenchmarkRun(Cpu.Cmos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(src) { m =>
       m.readByte(0xc000) should equal(18)
     }
+  }
+
+  test("Issue #125") {
+      val src = """
+        | byte output @$c000
+        | import stdio
+        | array(byte) data=[1,2,3,4]
+        | void main(){
+        |    byte i
+        |    for i:data{
+        |        output += i
+        |    }
+        |}
+      """.stripMargin
+    val m = EmuOptimizedRun(src)
+    m.readByte(0xc000) should equal(6)
+  }
+
+  test("Issue #125 (ver. 2)") {
+      val src = """
+        | byte output @$c000
+        | import stdio
+        | array(byte) data=[1,2,3,4]
+        | void main(){
+        |    byte i,v
+        |    for i,v:data{
+        |        output += v
+        |    }
+        |}
+      """.stripMargin
+    val m = EmuOptimizedRun(src)
+    m.readByte(0xc000) should equal(10)
   }
 }

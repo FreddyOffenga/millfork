@@ -13,12 +13,33 @@ There are two ways to include raw assembly code in your Millfork programs:
 Millfork inline assembly uses the same three-letter opcodes as most other 6502 assemblers.
 Indexing syntax is also the same. Only instructions available on the current CPU architecture are available.
 
+The short branching instructions and the `BRK` instruction support the immediate addressing mode,
+for more control over code generation.
+
+The `BBRn/BBSn/SMBn/RMBn` instructions cannot parameterize the tested bit. The syntax is as follows:
+
+    BBR1 $10,label
+    BBS3 zpvar,label
+    SMB4 zpvar
+    RMB0 $10
+    
+The HuC6280 `TST` instruction has the following syntax:
+
+    TST #1,$1000
+    TST #2,$2000,X
+    
+The HuC6280 `TAM` and `TMA` instruction syntactically use the immediate addressing mode (the `TAMn/TMAn` form is not supported):
+
+    TAM #$10
+    TMA #$20
+     
+
 **Work in progress**: 
-Currently, `RMBx`/`SMBx`/`BBRx`/`BBSx` and some extra 65CE02/HuC6280/65816 instructions are not supported yet.
+Currently, some extra 65CE02/65816 instructions are not supported yet.
 
 Undocumented instructions are supported using various opcodes.
 
-Labels have to be followed by a colon and they can optionally be on a separate line.
+Labels have to be followed by a colon, and they can optionally be on a separate line.
 Indentation is not important:
 
     first:  INC x
@@ -27,9 +48,20 @@ Indentation is not important:
     INC z
 
 
-Label names have to start with a letter and can contain digits, underscores and letters.
-This means than they cannot start with a period like in many other assemblers.
-Similarly, anonymous labels designated with `+` or `-` are also not supported.
+Global label names have to start with a letter and can contain digits, underscores and letters.
+Local label names (available since Millfork 0.3.22) start with a period and are visible only in the given function.
+Anonymous labels designated with `+` or `-` are also not supported.
+
+Referring to a global label with an offset requires wrapping it in `label(…)`:
+
+    STA .local_opcode              // ok
+    STA label(.local_opcode)       // ok
+    STA .local_opcode + 1          // ok
+    STA label(.local_opcode) + 1   // ok
+    STA global_opcode              // ok
+    STA label(global_opcode)       // ok
+    STA global_opcode + 1          // NOT OK
+    sta label(global_opcode) + 1   // ok
 
 Assembly can refer to variables and constants defined in Millfork,
 but you need to be careful with using absolute vs immediate addressing:
@@ -49,7 +81,7 @@ but you need to be careful with using absolute vs immediate addressing:
     }
 
 Any assembly opcode can be prefixed with `?`, which allows the optimizer change it or elide it if needed.
-Opcodes without that prefix will be always compiled as written.
+Opcodes without that prefix will always be compiled as written.
 
 The '!' prefix marks the statement as volatile, which means it will be a subject to certain, but not all optimizations,
 in order to preserve its semantics.
@@ -92,7 +124,7 @@ the return type can be any valid return type, like for Millfork functions.
 If the size of the return type is one byte, 
 then the result is passed via the accumulator.  
 If the size of the return type is two bytes,
-then the low byte of the result is passed via the accumulator
+then the low byte of the result is passed via the accumulator,
 and the high byte of the result is passed via the X register.
 
 
@@ -130,9 +162,11 @@ Non-macro functions can only have their parameters passed via registers:
 * `word xa`, `word ax`, `word ay`, `word ya`, `word xy`, `word yx`: a 2-byte word byte passed via given two CPU registers,
 with the high byte passed through the first register and the low byte passed through the second register; any 2-byte type can be used
 
+* the above, but written more explicitly: `byte register(a) paramname`, `byte register(x) paramname`, `word register(ax) paramname` etc.
+
 For example, this piece of code:
 
-    asm void f(word ax) @F_ADDR extern
+    asm void f(word register(ax) value) @F_ADDR extern
     
     f(5)
     
@@ -158,7 +192,7 @@ Macro assembly functions can have maximum one parameter passed via a register.
 An external function should be declared with a defined memory address 
 and the `extern` keyword instead of the body:
 
-    asm void putchar(byte a) @$FFD2 extern
+    asm void putchar(byte register(a) char) @$FFD2 extern
 
 ## Safe assembly
 
@@ -197,7 +231,7 @@ it should abide to the following rules:
     
     * explicitly use 16-bit immediate operands when appropriate; the assembler doesn't track flags and assumes 8-bit immediates by default (TODO: actually implement the 16-bit inline assembly correctly)
     
-    * use far jumps unless you're sure that the called function returns with an `RTS`  
+    * use far jumps unless you are sure the called function returns with an `RTS`  
     
 * on 65CE02:
 

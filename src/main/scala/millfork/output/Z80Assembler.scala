@@ -1,5 +1,6 @@
 package millfork.output
 
+import millfork.CompilationFlag.EmitIllegals
 import millfork.assembly.OptimizationContext
 import millfork.assembly.opt.{SingleStatus, Status}
 import millfork.{CompilationFlag, CompilationOptions, Cpu, Platform}
@@ -7,8 +8,9 @@ import millfork.assembly.z80.{ZOpcode, _}
 import millfork.assembly.z80.opt.{CoarseFlowAnalyzer, ConditionalInstructions, CpuStatus, JumpFollowing, JumpShortening}
 import millfork.compiler.z80.Z80Compiler
 import millfork.env._
-import millfork.node.Z80NiceFunctionProperty.{DoesntChangeBC, DoesntChangeDE, DoesntChangeHL, DoesntChangeIY, SetsATo}
-import millfork.node.{NiceFunctionProperty, Program, ZRegister}
+import millfork.node.NiceFunctionProperty.DoesntWriteMemory
+import millfork.node.Z80NiceFunctionProperty.{DoesntChangeA, DoesntChangeBC, DoesntChangeCF, DoesntChangeDE, DoesntChangeHL, DoesntChangeIY, SetsATo}
+import millfork.node.{NiceFunctionProperty, Position, Program, ZRegister}
 
 import scala.annotation.tailrec
 import scala.collection.mutable
@@ -32,6 +34,10 @@ class Z80Assembler(program: Program,
     case ZRegister.E => 3
     case ZRegister.H => 4
     case ZRegister.L => 5
+    case ZRegister.IXH => 4
+    case ZRegister.IXL => 5
+    case ZRegister.IYH => 4
+    case ZRegister.IYL => 5
     case ZRegister.MEM_HL => 6
     case ZRegister.MEM_IX_D => 6
     case ZRegister.MEM_IY_D => 6
@@ -46,6 +52,8 @@ class Z80Assembler(program: Program,
   private def prefixByte(reg: ZRegister.Value): Int = reg match {
     case ZRegister.IX | ZRegister.MEM_IX_D => 0xdd
     case ZRegister.IY | ZRegister.MEM_IY_D => 0xfd
+    case ZRegister.IXH | ZRegister.IXL => 0xdd
+    case ZRegister.IYH | ZRegister.IYL => 0xfd
   }
 
   override def emitInstruction(bank: String, options: CompilationOptions, index: Int, instr: ZLine): Int = {
@@ -58,6 +66,14 @@ class Z80Assembler(program: Program,
     def requireZ80(): Unit = if (!options.flag(EmitZ80Opcodes)) log.error("Unsupported instruction: " + instr)
 
     def requireZ80Illegals(): Unit = if (!options.flag(EmitZ80Opcodes) || !options.flag(EmitIllegals)) log.error("Unsupported instruction: " + instr)
+
+    def requireR800(): Unit = if (!options.flag(EmitR800Opcodes)) log.error("Unsupported instruction: " + instr)
+
+    def requireNoR800(): Unit = if (options.flag(EmitR800Opcodes)) log.error("Unsupported instruction: " + instr)
+
+    def requireR800OrIllegals(): Unit = if (!options.flag(EmitR800Opcodes) && !options.flag(EmitIllegals)) log.error("Unsupported instruction: " + instr)
+
+    def requireR800Illegals(): Unit = if (!options.flag(EmitR800Opcodes) || !options.flag(EmitIllegals)) log.error("Unsupported instruction: " + instr)
 
     def requireExtended80(): Unit = if (!options.flag(EmitExtended80Opcodes)) log.error("Unsupported instruction: " + instr)
 
@@ -77,14 +93,18 @@ class Z80Assembler(program: Program,
       options.flag(EmitSharpOpcodes)
     }
 
+    implicit val position = instr.source.map(sl => Position(sl.moduleName, sl.line, 0, 0))
     try { instr match {
       case ZLine0(LABEL, NoRegisters, MemoryAddressConstant(Label(labelName))) =>
         val bank0 = mem.banks(bank)
-        labelMap(labelName) = bank0.index -> index
+        labelMap(labelName) = bank -> index
         index
       case ZLine0(BYTE, NoRegisters, param) =>
         writeByte(bank, index, param)
         index + 1
+      case ZLine0(CHANGED_MEM, NoRegisters, MemoryAddressConstant(Label(l))) if l.contains("..brk") =>
+        breakpointSet += mem.banks(bank).index -> index
+        index
       case ZLine0(DISCARD_F | DISCARD_HL | DISCARD_BC | DISCARD_DE | DISCARD_IX | DISCARD_IY | DISCARD_A | CHANGED_MEM, NoRegisters, _) =>
         index
       case ZLine0(LABEL | BYTE | DISCARD_F | DISCARD_HL | DISCARD_BC | DISCARD_DE | DISCARD_IX | DISCARD_IY | DISCARD_A | CHANGED_MEM, _, _) =>
@@ -313,12 +333,19 @@ class Z80Assembler(program: Program,
         writeByte(bank, index + 1, o.opcode + internalRegisterIndex(ZRegister.HL) * o.multiplier)
         writeByte(bank, index + 2, instr.parameter)
         index + 3
+      case ZLine0(op, OneRegister(ix@(IXH | IYH | IXL | IYL)), _) if oneRegister.contains(op) =>
+        requireR800OrIllegals()
+        val o = oneRegister(op)
+        writeByte(bank, index, prefixByte(ix))
+        writeByte(bank, index + 1, o.opcode + internalRegisterIndex(ix) * o.multiplier)
+        index + 2
       case ZLine0(op, OneRegister(reg), _) if reg != ZRegister.IMM_8 && oneRegister.contains(op) =>
         val o = oneRegister(op)
         writeByte(bank, index, o.opcode + internalRegisterIndex(reg) * o.multiplier)
         index + 1
       case ZLine0(SLL, OneRegister(reg), _) =>
         requireZ80Illegals()
+        requireNoR800()
         writeByte(bank, index, 0xcb)
         writeByte(bank, index + 1, 0x30 + internalRegisterIndex(reg))
         index + 2
@@ -329,6 +356,7 @@ class Z80Assembler(program: Program,
         index + 2
       case ZLine0(SLL, OneRegisterOffset(ix@(ZRegister.MEM_IX_D | ZRegister.MEM_IY_D), offset), _) =>
         requireZ80Illegals()
+        requireNoR800()
         writeByte(bank, index, prefixByte(ix))
         writeByte(bank, index + 1, 0xcb)
         writeByte(bank, index + 2, offset)
@@ -424,6 +452,33 @@ class Z80Assembler(program: Program,
             writeByte(bank, index + 1, 0x40 + internalRegisterIndex(ZRegister.MEM_HL) + internalRegisterIndex(target) * 8)
             writeByte(bank, index + 2, offset)
             index + 3
+          case TwoRegisters(target@(IXH | IYH | IXL | IYL), source@(A | B | C | D | E)) =>
+            requireR800OrIllegals()
+            writeByte(bank, index, prefixByte(target))
+            writeByte(bank, index, 0x40 + internalRegisterIndex(source) + internalRegisterIndex(target) * 8)
+            index + 2
+          case TwoRegisters(target@(A | B | C | D | E), source@(IXH | IYH | IXL | IYL)) =>
+            requireR800OrIllegals()
+            writeByte(bank, index, prefixByte(source))
+            writeByte(bank, index, 0x40 + internalRegisterIndex(source) + internalRegisterIndex(target) * 8)
+            index + 2
+          case TwoRegisters(target@(IXH | IXL), source@(IXH | IXL)) =>
+            requireR800OrIllegals()
+            writeByte(bank, index, prefixByte(source))
+            writeByte(bank, index, 0x40 + internalRegisterIndex(source) + internalRegisterIndex(target) * 8)
+            index + 2
+          case TwoRegisters(target@(IYH | IYL), source@(IYH | IYL)) =>
+            requireR800OrIllegals()
+            writeByte(bank, index, prefixByte(source))
+            writeByte(bank, index, 0x40 + internalRegisterIndex(source) + internalRegisterIndex(target) * 8)
+            index + 2
+          case TwoRegisters(target@(H | L), source@(H | L)) =>
+            writeByte(bank, index, 0x40 + internalRegisterIndex(source) + internalRegisterIndex(target) * 8)
+            index + 1
+          case TwoRegisters(target@(IXH | IYH | IXL | IYL | H | L), source@(IXH | IYH | IXL | IYL | H | L)) =>
+            log.error("Cannot assemble " + instr)
+            writeByte(bank, index, 0x40 + internalRegisterIndex(source) + internalRegisterIndex(target) * 8)
+            index + 1
           case TwoRegisters(target, source) =>
             writeByte(bank, index, 0x40 + internalRegisterIndex(source) + internalRegisterIndex(target) * 8)
             index + 1
@@ -726,6 +781,61 @@ class Z80Assembler(program: Program,
         requireIntel8085Illegals()
         writeByte(bank, index, 0x10)
         index + 1
+      case ZLine0(MULUB, TwoRegisters(A, A), _) =>
+        requireR800Illegals()
+        writeByte(bank, index, 0xED)
+        writeByte(bank, index + 1, 0xF9)
+        index + 2
+      case ZLine0(MULUB, TwoRegisters(A, B), _) =>
+        requireR800()
+        writeByte(bank, index, 0xED)
+        writeByte(bank, index + 1, 0xC1)
+        index + 2
+      case ZLine0(MULUB, TwoRegisters(A, C), _) =>
+        requireR800()
+        writeByte(bank, index, 0xED)
+        writeByte(bank, index + 1, 0xC9)
+        index + 2
+      case ZLine0(MULUB, TwoRegisters(A, D), _) =>
+        requireR800()
+        writeByte(bank, index, 0xED)
+        writeByte(bank, index + 1, 0xD1)
+        index + 2
+      case ZLine0(MULUB, TwoRegisters(A, E), _) =>
+        requireR800()
+        writeByte(bank, index, 0xED)
+        writeByte(bank, index + 1, 0xD9)
+        index + 2
+      case ZLine0(MULUB, TwoRegisters(A, H), _) =>
+        requireR800Illegals()
+        writeByte(bank, index, 0xED)
+        writeByte(bank, index + 1, 0xE1)
+        index + 2
+      case ZLine0(MULUB, TwoRegisters(A, L), _) =>
+        requireR800Illegals()
+        writeByte(bank, index, 0xED)
+        writeByte(bank, index + 1, 0xE9)
+        index + 2
+      case ZLine0(MULUW, TwoRegisters(HL, BC), _) =>
+        requireR800()
+        writeByte(bank, index, 0xED)
+        writeByte(bank, index + 1, 0xC3)
+        index + 2
+      case ZLine0(MULUW, TwoRegisters(HL, DE), _) =>
+        requireR800Illegals()
+        writeByte(bank, index, 0xED)
+        writeByte(bank, index + 1, 0xD3)
+        index + 2
+      case ZLine0(MULUW, TwoRegisters(HL, HL), _) =>
+        requireR800Illegals()
+        writeByte(bank, index, 0xED)
+        writeByte(bank, index + 1, 0xE3)
+        index + 2
+      case ZLine0(MULUW, TwoRegisters(HL, SP), _) =>
+        requireR800()
+        writeByte(bank, index, 0xED)
+        writeByte(bank, index + 1, 0xF3)
+        index + 2
       case _ =>
         log.fatal("Cannot assemble " + instr)
         index
@@ -736,12 +846,13 @@ class Z80Assembler(program: Program,
     }
   }
 
-  override def injectLabels(labelMap: Map[String, (Int, Int)], code: List[ZLine]): List[ZLine] = code // TODO
+  override def injectLabels(labelMap: Map[String, (String, Int)], code: List[ZLine]): List[ZLine] = code // TODO
 
   override def quickSimplify(code: List[ZLine]): List[ZLine] = code.map(a => a.copy(parameter = a.parameter.quickSimplify))
 
   override def gatherNiceFunctionProperties(options: CompilationOptions, niceFunctionProperties: mutable.Set[(NiceFunctionProperty, String)], function: NormalFunction, code: List[ZLine]): Unit = {
     import ZOpcode._
+    import NiceFunctionProperty._
     val functionName = function.name
     if (isNaughty(code)) return
     val localLabels = code.flatMap {
@@ -786,11 +897,24 @@ class Z80Assembler(program: Program,
         niceFunctionProperties += (niceFunctionProperty -> functionName)
       }
     }
+    genericPropertyScan(DoesntChangeA)(l => !l.changesRegister(ZRegister.A))
     genericPropertyScan(DoesntChangeHL)(l => !l.changesRegister(ZRegister.HL))
     genericPropertyScan(DoesntChangeDE)(l => !l.changesRegister(ZRegister.DE))
     genericPropertyScan(DoesntChangeBC)(l => !l.changesRegister(ZRegister.BC))
     genericPropertyScan(DoesntChangeIY)(l => !l.changesRegister(ZRegister.IY))
     simpleRetPropertyScan(_.a)(SetsATo)
+  }
+
+  override def gatherFunctionOptimizationHints(options: CompilationOptions, niceFunctionProperties: mutable.Set[(NiceFunctionProperty, String)], function: FunctionInMemory): Unit = {
+    import NiceFunctionProperty._
+    val functionName = function.name
+    if (function.optimizationHints("preserves_a")) niceFunctionProperties += DoesntChangeA -> functionName
+    if (function.optimizationHints("preserves_bc")) niceFunctionProperties += DoesntChangeBC -> functionName
+    if (function.optimizationHints("preserves_de")) niceFunctionProperties += DoesntChangeDE -> functionName
+    if (function.optimizationHints("preserves_hl")) niceFunctionProperties += DoesntChangeHL -> functionName
+    if (function.optimizationHints("preserves_cf")) niceFunctionProperties += DoesntChangeCF -> functionName
+    if (function.optimizationHints("preserves_memory")) niceFunctionProperties += DoesntWriteMemory -> functionName
+    if (function.optimizationHints("idempotent")) niceFunctionProperties += Idempotent -> functionName
   }
 
   @tailrec

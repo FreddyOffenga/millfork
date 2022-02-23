@@ -3,7 +3,7 @@
     import c64_basic
 #elseif CBM_264
     import c264_basic
-#elseif ZX_SPECTRUM || NEC_PC_88
+#elseif CBM_VIC || ZX_SPECTRUM || NEC_PC_88
     // no imports needed
 #else
     #error Unsupported platform
@@ -15,8 +15,9 @@ void main() {
     pointer line
     while true {
         line = readline()
-        // empty line is read as a single space
+        // empty line is read as a single space on C64
         if line[0] == 32 && line[1] == 0 { return }
+        if line[0] == 0 { return }
         putstrz(line)
         new_line()
     }

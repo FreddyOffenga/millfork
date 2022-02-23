@@ -72,12 +72,15 @@ object Opcode extends Enumeration {
   // illegals:
   LXA, XAA, ANC, ARR, ALR, SBX,
   LAX, SAX, RLA, RRA, SLO, SRE, DCP, ISC,
-  TAS, LAS, SHX, SHY, AHX,
+  TAS, LAS, SHX, SHY, AHX, KIL,
 
   // 65C02:
   STZ, PHX, PHY, PLX, PLY,
   BRA, TRB, TSB, STP, WAI,
-  // BBR, BBS, RMB, SMB,
+  BBR0, BBR1, BBR2, BBR3, BBR4, BBR5, BBR6, BBR7,
+  BBS0, BBS1, BBS2, BBS3, BBS4, BBS5, BBS6, BBS7,
+  RMB0, RMB1, RMB2, RMB3, RMB4, RMB5, RMB6, RMB7,
+  SMB0, SMB1, SMB2, SMB3, SMB4, SMB5, SMB6, SMB7,
 
   // 65CE02:
   CPZ, LDZ, DEZ, INZ,
@@ -95,8 +98,8 @@ object Opcode extends Enumeration {
   CLA, CLX, CLY,
   CSH, CSL,
   SAY, SXY, HuSAX,
-  // SET,
-  // ST0, ST1, ST2,
+   SET,
+  ST0, ST1, ST2,
   // BSR, // the same as on 65CE02
   TAM, TMA,
   TAI, TIA, TDD, TIN, TII, // memcpy instructions
@@ -177,27 +180,42 @@ object Opcode extends Enumeration {
     case "AXA" => AHX
     case "AXS" => SBX // could mean SAX
     case "BCC" => BCC
+    case "LBCC" => BCC
     case "BCS" => BCS
+    case "LBCS" => BCS
     case "BEQ" => BEQ
+    case "LBEQ" => BEQ
     case "BIT" => BIT
     case "BMI" => BMI
+    case "LBMI" => BMI
     case "BNE" => BNE
+    case "LBNE" => BNE
     case "BPL" => BPL
+    case "LBPL" => BPL
     case "BRA" => BRA
+    case "LBRA" => BRA
     case "BRK" => BRK
     case "BRL" => BRL
     case "BSR" => BSR
+    case "LBSR" => BSR
     case "BVC" => BVC
+    case "LBVC" => BVC
     case "BVS" => BVS
+    case "LBVS" => BVS
     case "CLC" => CLC
     case "CLD" => CLD
+    case "CLE" => CLE
     case "CLI" => CLI
     case "CLV" => CLV
+    case "CLX" => CLX
+    case "CLY" => CLY
     case "CMP" => CMP
     case "COP" => COP
     case "CPX" => CPX
     case "CPY" => CPY
     case "CPZ" => CPZ
+    case "CSH" => CSH
+    case "CSL" => CSL
     case "DCM" => DCP
     case "DCP" => DCP
     case "DEC" => DEC
@@ -215,6 +233,7 @@ object Opcode extends Enumeration {
     case "ISC" => ISC
     case "JMP" => JMP
     case "JSR" => JSR
+    case "KIL" => KIL
     case "LAS" => LAS
     case "LAX" => LAX
     case "LDA" => LDA
@@ -224,6 +243,7 @@ object Opcode extends Enumeration {
     case "LSE" => SRE
     case "LSR" => LSR
     case "LXA" => LXA
+    case "MAP" => MAP
     case "NEG" => NEG
     case "NOP" => NOP
     case "OAL" => LXA
@@ -239,17 +259,19 @@ object Opcode extends Enumeration {
     case "PHW" => PHW
     case "PHX" => PHX
     case "PHY" => PHY
+    case "PHZ" => PHZ
     case "PLA" => PLA
     case "PLB" => PLB
     case "PLD" => PLD
     case "PLP" => PLP
     case "PLX" => PLX
     case "PLY" => PLY
+    case "PLZ" => PLZ
     case "REP" => REP
     case "RLA" => RLA
     case "ROL" => ROL
     case "ROR" => ROR
-    case "ROW" => ROR_W // TODO: is this correct?
+    case "ROW" => ROL_W
     case "RRA" => RRA
     case "RTI" => RTI
     case "RTL" => RTL
@@ -260,18 +282,25 @@ object Opcode extends Enumeration {
     case "SBX" => SBX
     case "SEC" => SEC
     case "SED" => SED
+    case "SEE" => SEE
     case "SEI" => SEI
     case "SEP" => SEP
+    case "SET" => SET
     case "SHX" => SHX
     case "SHY" => SHY
     case "SLO" => SLO
     case "SRE" => SRE
+    case "ST0" => ST0
+    case "ST1" => ST1
+    case "ST2" => ST2
     case "STA" => STA
     case "STP" => STP
     case "STX" => STX
     case "STY" => STY
     case "STZ" => STZ
+    case "SXY" => SXY
     case "TAB" => TAB
+    case "TAI" => TAI
     case "TAM" => TAM
     case "TAS" => TAS
     case "TAX" => TAX
@@ -280,7 +309,10 @@ object Opcode extends Enumeration {
     case "TBA" => TBA
     case "TCD" => TCD
     case "TDC" => TDC
+    case "TDD" => TDD
     case "TCS" => TCS
+    case "TIA" => TIA
+    case "TII" => TII
     case "TSC" => TSC
     case "TMA" => TMA
     case "TRB" => TRB
@@ -299,6 +331,44 @@ object Opcode extends Enumeration {
     case "XAS" => SHX
     case "XBA" => XBA
     case "XCE" => XCE
+    case "BBR0" => BBR0
+    case "BBR1" => BBR1
+    case "BBR2" => BBR2
+    case "BBR3" => BBR3
+    case "BBR4" => BBR4
+    case "BBR5" => BBR5
+    case "BBR6" => BBR6
+    case "BBR7" => BBR7
+    case "BBS0" => BBS0
+    case "BBS1" => BBS1
+    case "BBS2" => BBS2
+    case "BBS3" => BBS3
+    case "BBS4" => BBS4
+    case "BBS5" => BBS5
+    case "BBS6" => BBS6
+    case "BBS7" => BBS7
+    case "RMB0" => RMB0
+    case "RMB1" => RMB1
+    case "RMB2" => RMB2
+    case "RMB3" => RMB3
+    case "RMB4" => RMB4
+    case "RMB5" => RMB5
+    case "RMB6" => RMB6
+    case "RMB7" => RMB7
+    case "SMB0" => SMB0
+    case "SMB1" => SMB1
+    case "SMB2" => SMB2
+    case "SMB3" => SMB3
+    case "SMB4" => SMB4
+    case "SMB5" => SMB5
+    case "SMB6" => SMB6
+    case "SMB7" => SMB7
+    case "TAI" => TAI
+    case "TIA" => TIA
+    case "TDD" => TDD
+    case "TII" => TII
+    case "TIN" => TIN
+    case "TST" => TST
 
       // TODO: add all of those
     case _ =>

@@ -30,7 +30,7 @@ object FlowInfoRequirement extends Enumeration {
   }
 
   def assertLabels(x: FlowInfoRequirement.Value): Unit = x match {
-    case NoRequirement => FatalErrorReporting.reportFlyingPig("Backward flow info required")
+    case NoRequirement => FatalErrorReporting.reportFlyingPig("Label info required")
     case _ => ()
   }
 }
@@ -43,20 +43,20 @@ class RuleBasedAssemblyOptimization(val name: String, val needsFlowInfo: FlowInf
 
   private val actualRules = rules.flatMap(_.flatten)
   actualRules.foreach(_.pattern.validate(needsFlowInfo))
+  private val actualRulesWithIndex = actualRules.zipWithIndex
 
 
   override def optimize(f: NormalFunction, code: List[AssemblyLine], optimizationContext: OptimizationContext): List[AssemblyLine] = {
     val taggedCode = FlowAnalyzer.analyze(f, code, optimizationContext, needsFlowInfo)
-    val (changed, optimized) = optimizeImpl(f, taggedCode, optimizationContext)
-    if (changed) optimized else code
+    optimizeImpl(f, code, taggedCode, optimizationContext)
   }
 
-  def optimizeImpl(f: NormalFunction, code: List[(FlowInfo, AssemblyLine)], optimizationContext: OptimizationContext): (Boolean, List[AssemblyLine]) = {
+  final def optimizeImpl(f: NormalFunction, code: List[AssemblyLine], taggedCode: List[(FlowInfo, AssemblyLine)], optimizationContext: OptimizationContext): List[AssemblyLine] = {
     val log = optimizationContext.log
-    code match {
-      case Nil => false -> Nil
+    taggedCode match {
+      case Nil => code
       case head :: tail =>
-        for ((rule, index) <- actualRules.zipWithIndex) {
+        for ((rule, index) <- actualRulesWithIndex) {
           val ctx = new AssemblyMatchingContext(
             optimizationContext.options,
             optimizationContext.labelMap,
@@ -64,9 +64,10 @@ class RuleBasedAssemblyOptimization(val name: String, val needsFlowInfo: FlowInf
             optimizationContext.niceFunctionProperties,
             head._1.labelUseCount(_)
           )
-          rule.pattern.matchTo(ctx, code) match {
+          rule.pattern.matchTo(ctx, taggedCode) match {
             case Some(rest: List[(FlowInfo, AssemblyLine)]) =>
-              val matchedChunkToOptimize: List[AssemblyLine] = code.take(code.length - rest.length).map(_._2)
+              val optimizedChunkLengthBefore = taggedCode.length - rest.length
+              val (matchedChunkToOptimize, restOfCode) = code.splitAt(optimizedChunkLengthBefore)
               val optimizedChunk: List[AssemblyLine] = rule.result(matchedChunkToOptimize, ctx)
               val optimizedChunkWithSource =
                 if (!ctx.compilationOptions.flag(CompilationFlag.LineNumbersInAssembly)) optimizedChunk
@@ -75,34 +76,40 @@ class RuleBasedAssemblyOptimization(val name: String, val needsFlowInfo: FlowInf
                 else if (optimizedChunk.size == 1) optimizedChunk.map(_.pos(SourceLine.merge(matchedChunkToOptimize.map(_.source))))
                 else if (matchedChunkToOptimize.flatMap(_.source).toSet.size == 1) optimizedChunk.map(_.pos(SourceLine.merge(matchedChunkToOptimize.map(_.source))))
                 else optimizedChunk
-              log.debug(s"Applied $name ($index)")
-              if (needsFlowInfo != FlowInfoRequirement.NoRequirement) {
-                val before = code.head._1.statusBefore
-                val after = code(matchedChunkToOptimize.length - 1)._1.importanceAfter
-                log.trace(s"Before: $before")
-                log.trace(s"After:  $after")
+              if (log.debugEnabled) {
+                log.debug(s"Applied $name ($index)")
               }
               if (log.traceEnabled) {
+                if (needsFlowInfo != FlowInfoRequirement.NoRequirement) {
+                  val before = head._1.statusBefore
+                  val after = taggedCode(matchedChunkToOptimize.length - 1)._1.importanceAfter
+                  log.trace(s"Before: $before")
+                  log.trace(s"After:  $after")
+                }
                 matchedChunkToOptimize.filter(_.isPrintable).foreach(l => log.trace(l.toString))
                 log.trace("     ↓")
                 optimizedChunkWithSource.filter(_.isPrintable).foreach(l => log.trace(l.toString))
               }
               if (needsFlowInfo != FlowInfoRequirement.NoRequirement) {
-                return true -> (optimizedChunkWithSource ++ optimizeImpl(f, rest, optimizationContext)._2)
+                return optimizedChunkWithSource ++ optimizeImpl(f, restOfCode, rest, optimizationContext)
               } else {
-                return true -> optimize(f, optimizedChunkWithSource ++ rest.map(_._2), optimizationContext)
+                return optimize(f, optimizedChunkWithSource ++ restOfCode, optimizationContext)
               }
             case None => ()
           }
         }
-        val (changedTail, optimizedTail) = optimizeImpl(f, tail, optimizationContext)
-        (changedTail, head._2 :: optimizedTail)
+        val optimizedTail = optimizeImpl(f, code.tail, tail, optimizationContext)
+        if (optimizedTail eq code.tail) {
+          code
+        } else {
+          code.head :: optimizedTail
+        }
     }
   }
 }
 
 class AssemblyMatchingContext(val compilationOptions: CompilationOptions,
-                              val labelMap: Map[String, (Int, Int)],
+                              val labelMap: Map[String, (String, Int)],
                               val zeropageRegister: Option[ThingInMemory],
                               val niceFunctionProperties: Set[(NiceFunctionProperty, String)],
                               val labelUseCount: String => Int) {
@@ -216,7 +223,9 @@ class AssemblyMatchingContext(val compilationOptions: CompilationOptions,
         return false
       case AssemblyLine0(_, AddrMode.Relative, MemoryAddressConstant(Label(l))) =>
         jumps += l
-      case AssemblyLine0(br, _, _) if OpcodeClasses.ShortBranching(br) =>
+      case AssemblyLine0(_, AddrMode.ZeroPageWithRelative, StructureConstant(_, List(_, MemoryAddressConstant(Label(l))))) =>
+        jumps += l
+      case AssemblyLine0(br, _, _) if OpcodeClasses.ShortBranching(br) || OpcodeClasses.SingleBitBranch(br) =>
         return false
       case _ => ()
     }
@@ -270,8 +279,8 @@ object HelperCheckers {
     if (badAddrModes(a1) || badAddrModes(a2)) return false
     if (l1.opcode == Opcode.CHANGED_MEM || l2.opcode == Opcode.CHANGED_MEM) return false
     if ((a1 == IndexedSY) != (a2 == IndexedSY)) return true // bold assertion, but usually true
-    val p1 = l1.parameter
-    val p2 = l2.parameter
+    val p1 = if(a1 == ZeroPageWithRelative) l1.parameter.asInstanceOf[StructureConstant].fields.head else l1.parameter
+    val p2 = if(a2 == ZeroPageWithRelative) l2.parameter.asInstanceOf[StructureConstant].fields.head else l2.parameter
     val w1 = OpcodeClasses.AccessesWordInMemory(l1.opcode)
     val w2 = OpcodeClasses.AccessesWordInMemory(l2.opcode)
 
@@ -860,22 +869,32 @@ case object DebugMatching extends AssemblyPattern {
 }
 
 case object Linear extends AssemblyLinePattern {
-  override def matchLineTo(ctx: AssemblyMatchingContext, flowInfo: FlowInfo, line: AssemblyLine): Boolean =
-    OpcodeClasses.AllLinear(line.opcode)
+  override def matchLineTo(ctx: AssemblyMatchingContext, flowInfo: FlowInfo, line: AssemblyLine): Boolean = {
+    if (line.opcode == Opcode.JSR) line.parameter match {
+      case MemoryAddressConstant(f: FunctionInMemory) => f.hasOptimizationHints
+      case _ => false
+    } else OpcodeClasses.AllLinear(line.opcode)
+  }
 
   override def hitRate: Double = 0.89
 }
 
 case object LinearOrBranch extends TrivialAssemblyLinePattern {
   override def apply(line: AssemblyLine): Boolean =
-    OpcodeClasses.AllLinear(line.opcode) || OpcodeClasses.ShortBranching(line.opcode)
+    if (line.opcode == Opcode.JSR) line.parameter match {
+      case MemoryAddressConstant(f: FunctionInMemory) => f.hasOptimizationHints
+      case _ => false
+    } else OpcodeClasses.AllLinear(line.opcode) || OpcodeClasses.ShortBranching(line.opcode)
 
   override def hitRate: Double = 0.887
 }
 
 case object LinearOrLabel extends TrivialAssemblyLinePattern {
   override def apply(line: AssemblyLine): Boolean =
-    line.opcode == Opcode.LABEL || OpcodeClasses.AllLinear(line.opcode)
+    if (line.opcode == Opcode.JSR) line.parameter match {
+      case MemoryAddressConstant(f: FunctionInMemory) => f.hasOptimizationHints
+      case _ => false
+    } else line.opcode == Opcode.LABEL || OpcodeClasses.AllLinear(line.opcode)
 
   override def hitRate: Double = 0.899
 }
@@ -898,6 +917,7 @@ case object ReadsMemory extends TrivialAssemblyLinePattern {
   override def apply(line: AssemblyLine): Boolean =
     line.addrMode match {
       case AddrMode.Indirect => true
+      case AddrMode.TripleAbsolute => true
       case AddrMode.Implied | AddrMode.Immediate => false
       case _ =>
         OpcodeClasses.ReadsMemoryIfNotImpliedOrImmediate(line.opcode)
@@ -922,7 +942,7 @@ case object IsNonvolatile extends TrivialAssemblyLinePattern {
 }
 
 case object ReadsX extends TrivialAssemblyLinePattern {
-  val XAddrModes: Set[AddrMode.Value] = Set(AddrMode.AbsoluteX, AddrMode.IndexedX, AddrMode.ZeroPageX, AddrMode.AbsoluteIndexedX)
+  val XAddrModes: Set[AddrMode.Value] = Set(AddrMode.AbsoluteX, AddrMode.IndexedX, AddrMode.ZeroPageX, AddrMode.AbsoluteIndexedX, AddrMode.ImmediateWithAbsoluteX, AddrMode.ImmediateWithZeroPageX)
 
   override def apply(line: AssemblyLine): Boolean =
     OpcodeClasses.ReadsXAlways(line.opcode) || XAddrModes(line.addrMode)
@@ -1158,6 +1178,7 @@ case object ChangesMemory extends AssemblyLinePattern {
     line match {
       case AssemblyLine0(JSR | BSR, Absolute | LongAbsolute, MemoryAddressConstant(th)) => ctx.functionChangesMemory(th.name)
       case AssemblyLine0(op, Implied, _) => OpcodeClasses.ChangesMemoryAlways(op)
+      case AssemblyLine0(op, TripleAbsolute, _) => true
       case AssemblyLine0(op, _, _) => OpcodeClasses.ChangesMemoryAlways(op) || OpcodeClasses.ChangesMemoryIfNotImplied(op)
       case _ => false
     }
@@ -1251,6 +1272,8 @@ case class RefersTo(identifier: String, offset: Int = 999) extends TrivialAssemb
         (offset == 999 || offset == nn) && th.name == identifier
       case CompoundConstant(MathOperator.Plus, NumericConstant(nn, _), MemoryAddressConstant(th)) =>
         (offset == 999 || offset == nn) && th.name == identifier
+      case StructureConstant(_, list) =>
+        list.exists(check)
       case _ => false
     }
   }
@@ -1314,6 +1337,22 @@ case class RefersToOrUses(identifier: String, offset: Int = 999) extends Trivial
         case CompoundConstant(MathOperator.Plus, NumericConstant(nn, _), MemoryAddressConstant(th)) => th.name == identifier
         case CompoundConstant(MathOperator.Minus, MemoryAddressConstant(th), NumericConstant(nn, _)) => th.name == identifier
         case _ => false
+      }
+      case AddrMode.ZeroPageWithRelative => parameter match {
+        case StructureConstant(_, params) => params.exists(x => check(x, AddrMode.ZeroPage))
+        case _ => false
+      }
+      case AddrMode.TripleAbsolute => parameter match {
+        case StructureConstant(_, params) => params.exists(x => check(x, AddrMode.Absolute))
+        case _ => false // TODO: ???
+      }
+      case AddrMode.ImmediateWithAbsolute | AddrMode.ImmediateWithZeroPage => parameter match {
+        case StructureConstant(_, params) => params.exists(x => check(x, AddrMode.Absolute))
+        case _ => false // TODO: ???
+      }
+      case AddrMode.ImmediateWithAbsoluteX | AddrMode.ImmediateWithZeroPageX => parameter match {
+        case StructureConstant(_, params) => params.exists(x => check(x, AddrMode.AbsoluteX))
+        case _ => false // TODO: ???
       }
       case _ => false
     }
@@ -1506,6 +1545,7 @@ case class DoesntChangeIndexingInAddrMode(i: Int) extends AssemblyLinePattern {
       case AddrMode.IndexedZ | AddrMode.LongIndexedZ => !ChangesIZ.matchLineTo(ctx, flowInfo, line)
       case AddrMode.Stack => !OpcodeClasses.ChangesS.contains(line.opcode)
       case AddrMode.IndexedSY => !OpcodeClasses.ChangesS.contains(line.opcode) && !ChangesY.matchLineTo(ctx, flowInfo, line)
+      case AddrMode.Indirect | AddrMode.LongIndirect => ChangesMemory.matchLineTo(ctx, flowInfo, line)
       case _ => true
     }
 
@@ -1540,6 +1580,16 @@ case class HasCallerCount(count: Int) extends AssemblyLinePattern {
     }
 
   override def hitRate: Double = 0.31
+}
+
+object ParameterIsLocalLabel extends AssemblyLinePattern {
+  override def matchLineTo(ctx: AssemblyMatchingContext, flowInfo: FlowInfo, line: AssemblyLine): Boolean =
+    line match {
+      case AssemblyLine0(Opcode.LABEL, _, MemoryAddressConstant(Label(l))) => l.startsWith(".")
+      case _ => false
+    }
+
+  override def hitRate: Double = 0.056
 }
 
 case class MatchElidableCopyOf(i: Int, firstLinePattern: AssemblyLinePattern, lastLinePattern: AssemblyLinePattern) extends AssemblyPattern {
@@ -1601,4 +1651,16 @@ case object IsNotALabelUsedManyTimes extends AssemblyLinePattern {
   }
 
   override def hitRate: Double = 0.92 // ?
+}
+
+case object ParameterIsLabel extends AssemblyLinePattern {
+
+  override def validate(needsFlowInfo: FlowInfoRequirement.Value): Unit = FlowInfoRequirement.assertLabels(needsFlowInfo)
+
+  override def matchLineTo(ctx: AssemblyMatchingContext, flowInfo: FlowInfo, line: AssemblyLine): Boolean = line.parameter match {
+      case MemoryAddressConstant(Label(l)) => true
+      case _ => false
+    }
+
+  override def hitRate: Double = 0.09 // ?
 }

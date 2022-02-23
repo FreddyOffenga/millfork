@@ -22,7 +22,11 @@ object ShouldNotParse extends Matchers {
     val log = TestErrorReporting.log
     println(source)
     val platform = EmuPlatform.get(cpu)
-    val options = CompilationOptions(platform, Map(CompilationFlag.LenientTextEncoding -> true), None, platform.zpRegisterSize, Map(), JobContext(log, new LabelGenerator))
+    val flags = CpuFamily.forType(cpu) match {
+      case CpuFamily.M6809 => Map(CompilationFlag.LenientTextEncoding -> true, CompilationFlag.UseUForStack -> true)
+      case _ => Map(CompilationFlag.LenientTextEncoding -> true)
+    }
+    val options = CompilationOptions(platform, flags, None, platform.zpRegisterSize, Map(), EmuPlatform.textCodecRepository, JobContext(log, new LabelGenerator))
     log.hasErrors = false
     log.verbosity = 999
     var effectiveSource = source
@@ -39,11 +43,19 @@ object ShouldNotParse extends Matchers {
       }
     parserF.toAst match {
       case Success(program, _) =>
-        fail("Parse succeeded")
+        if (!log.hasErrors) {
+          fail("Parse succeeded")
+        } else {
+          log.warn("Non-fatal parse errors encountered. OK.")
+        }
       case f: Failure[_, _] =>
         println(f.extra.toString)
         log.warn("Last parser: " + f.lastParser, Some(parserF.indexToPosition(f.index, f.lastParser.toString)))
-        log.warn("Expected syntax error: " + parserF.lastLabel, Some(parserF.lastPosition))
+        if (parserF.lastLabel != "") {
+          log.warn(s"Expected syntax error: ${parserF.lastLabel} expected", Some(parserF.lastPosition))
+        } else {
+          log.warn("Expected syntax error", Some(parserF.lastPosition))
+        }
     }
   }
 }

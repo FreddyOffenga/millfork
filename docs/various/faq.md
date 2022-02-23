@@ -10,7 +10,7 @@ mostly game developers, who have little use for advanced features of C, but don'
 ### What was the inspiration?
 
 The main inspirations was Atalan, but also Quetzalcoatl, Batari BASIC and NESHLA.
-Sadly, Atalan has been abandoned and the compiler has been left in a non-working state.
+Sadly, Atalan has been abandoned, and the compiler has been left in a non-working state.
 The goal of Millfork is to succeed where Atalan failed. 
 
 ### What platforms are supported?
@@ -82,6 +82,10 @@ You either need to rewrite foreign assembly into Millfork assembly syntax,
 or generate a static binary and link it manually using the `file` directive.
 
 Since the compiler is a work-in-progress, some of the mentioned issues might be improved upon in the future.
+
+### I have experience with C and/or assembly. What should I keep in mind?
+
+See the [differences from C](./cdiff.md) and the [differences from assembly](./asmdiff.md).
 
 ### Why is it called Millfork?
 

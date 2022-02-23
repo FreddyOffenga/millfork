@@ -29,7 +29,7 @@ class Z80StatementPreprocessor(ctx: CompilationContext, statements: List[Executa
     case f: DerefDebuggingExpression => Nil
     case IndexedExpression(a, VariableExpression(v)) => if (v == variable) {
       ctx.env.maybeGet[Thing](a + ".array") match {
-        case Some(array: MfArray) if array.elementType.size == 1 => Seq(a)
+        case Some(array: MfArray) if array.elementType.alignedSize == 1 => Seq(a)
         case _ => Nil
       }
     } else Nil
@@ -39,7 +39,7 @@ class Z80StatementPreprocessor(ctx: CompilationContext, statements: List[Executa
 
 
   def maybeOptimizeForStatement(f: ForStatement): Option[(ExecutableStatement, VV)] = {
-    if (!ctx.options.flag(CompilationFlag.DangerousOptimizations)) return None
+    if (f.extraIncrement.isEmpty && !ctx.options.flag(CompilationFlag.DangerousOptimizations)) return None
     // TODO: figure out when this is useful
     // Currently all instances of arr[i] are replaced with arr`popt##`i[0], where arr`popt`i is a new pointer variable.
     // This breaks the main Millfork promise of not using hidden variables!
@@ -47,8 +47,8 @@ class Z80StatementPreprocessor(ctx: CompilationContext, statements: List[Executa
     if (!optimize) return None
     if (ctx.env.eval(f.start).isEmpty) return None
     if (f.variable.contains(".")) return None
-    if (f.start.containsVariable(f.variable)) return None
-    if (f.end.containsVariable(f.variable)) return None
+    if (ctx.env.overlapsVariable(f.variable, f.start)) return None
+    if (ctx.env.overlapsVariable(f.variable, f.end)) return None
     val indexVariable = env.get[Variable](f.variable)
     if (indexVariable.typ.size != 1) return None
     if (indexVariable.isVolatile) return None
@@ -76,6 +76,7 @@ class Z80StatementPreprocessor(ctx: CompilationContext, statements: List[Executa
         register = false,
         None,
         None,
+        Set.empty,
         None
       ), ctx.options, isPointy = true)
       (a -> f.variable) -> (a + infix + f.variable)

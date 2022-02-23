@@ -6,19 +6,24 @@ project/project/target/
 stuff
 releases
 src/test/scala/experiments/
+src/test/java/experiments/
 # doesn't work yet
 examples/lunix/
-
-# may become a feature in the future
-*.tbl
+# older copies
+include-*/
 
 # hidden files
 *.~
+
+#tools
+*.bat
+issue*.mfk
 
 # compiled Scala files
 *.jar
 *.class
 *.zip
+*.exe
 
 # compiled Millfork files
 *.prg
@@ -26,9 +31,12 @@ examples/lunix/
 *.seq
 *.asm
 *.lbl
+*.labels
 *.nl
 *.fns
 *.sym
+*.mlb
+*.dbg
 *.deb
 *.xex
 *.nes
@@ -43,10 +51,17 @@ examples/lunix/
 *.com
 *.gb
 *.rom
+*.ssd
 *.o
+*.cmd
+*.z80
 HELLO
 HELLOCPC
 FIZZBUZZ
+__hw_bbcmicro
+__hw_cpc464
+tests-cpc-*
+BBC-*
 
 #heap dumps
 java_pid*

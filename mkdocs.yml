@@ -18,30 +18,40 @@ nav:
         - BBC Micro: api/bbcmicro-programming-guide.md
         - Game Boy: api/gb-programming-guide.md
         - NES/Famicom: api/famicom-programming-guide.md
+        - Color Computer: api/coco-programming-guide.md
   - Language reference:
     - Preprocessor: lang/preprocessor.md
+    - Modules: lang/modules.md
     - Syntax: lang/syntax.md
     - Types: lang/types.md
     - Literals: lang/literals.md
     - Predefined constants: lang/predefined_constants.md
+    - List of magic suffixes: lang/suffixes.md
     - Text encodings: lang/text.md
+    - Custom text encodings: lang/custom-encoding.md
     - Operators: lang/operators.md
     - Functions: lang/functions.md
     - Inline 6502 assembly: lang/assembly.md
     - Inline 8080/LR35902/Z80 assembly: lang/assemblyz80.md
     - Inline 6809 assembly: lang/assembly6809.md
     - Reentrancy guidelines: lang/reentrancy.md
+    - Optimization hints: lang/hints.md
     - List of keywords: lang/keywords.md
   - Library reference:
     - stdlib module: stdlib/stdlib.md
-    - string module: stdlib/string.md
+    - string, scrstring and pstring modules: stdlib/string.md
     - stdio module: stdlib/stdio.md
-    - keyboard, err, random: stdlib/other.md
-    - joy, mouse, x_coord: stdlib/input.md
+    - err and random modules: stdlib/other.md
+    - keyboard module: stdlib/keyboard.md
+    - mouse and coord modules: stdlib/mouse.md
+    - joy module: stdlib/joy.md
     - encconv module: stdlib/encconv.md
-    - Platform-dependent modules: stdlib/frequent.md
+    - Platform-dependent definitions: stdlib/frequent.md
     - cbm_file module: stdlib/cbm_file.md
     - C64-only modules: stdlib/c64.md
+    - VIC-20-only modules: stdlib/vic20.md
+    - PET-only modules: stdlib/cbm_pet.md
+    - Apple II-only modules: stdlib/apple2.md
     - NES-only modules: stdlib/nes.md
     - Lynx-only modules: stdlib/lynx.md
     - Game Boy–only modules: stdlib/gb.md
@@ -53,6 +63,10 @@ nav:
     - Undefined behaviour: abi/undefined-behaviour.md
     - Undocumented instruction support: abi/undocumented.md
     - Variable storage: abi/variable-storage.md
+  - Additional guides:
+    - Optimization guide: various/optimization.md
+    - Differences from C: various/cdiff.md
+    - Differences in assembly: various/asmdiff.md
   - External links:
     - Downloads: https://github.com/KarolS/millfork/releases/
     - Source code: https://github.com/KarolS/millfork

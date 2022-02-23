@@ -16,6 +16,8 @@
 
 * [Preprocessor](lang/preprocessor.md)
 
+* [Modules](lang/modules.md)
+
 * [Syntax](lang/syntax.md)
 
 * [Types](lang/types.md)
@@ -24,7 +26,11 @@
 
 * [Predefined constants](lang/predefined_constants.md)
 
+* [List of magic suffixes](lang/suffixes.md)
+
 * [List of text encodings and escape sequences](lang/text.md)
+
+* [Defining custom encodings](lang/custom-encoding.md)
 
 * [Operators reference](lang/operators.md)
 
@@ -38,35 +44,59 @@
 
 * [Important guidelines regarding reentrancy](lang/reentrancy.md)
 
+* [Optimization hints](lang/hints.md)
+
 * [List of keywords](lang/keywords.md)
 
 ## Library reference
 
 * [`stdlib` module](stdlib/stdlib.md)
 
-* [`string` module](stdlib/string.md)
+* [`string`, `scrstring` and `pstring` modules](stdlib/string.md)
 
 * [`stdio` module](stdlib/stdio.md)
 
-* [Modules for reading input devices](stdlib/input.md)
+* Reading input devices:
+
+    * [`joy` module](stdlib/joy.md)
+
+    * [`keyboard` module](stdlib/keyboard.md)
+
+    * [`mouse` module](stdlib/mouse.md)
 
 * [`encconv` module](stdlib/encconv.md)
 
-* [Other cross-platform modules (`keyboard`, `err`, `random`)](stdlib/other.md)
+* [Other cross-platform modules (`err`, `random`)](stdlib/other.md)
 
-* [Definitions available on only some platforms](stdlib/frequent.md)
+* Platform-specific modules:
 
-* [C64-only modules](stdlib/c64.md)
+    * [Definitions available on only some platforms](stdlib/frequent.md)
 
-* [`cbm_file` module](stdlib/cbm_file.md)
+    * [C64-only modules](stdlib/c64.md)
 
-* [NES-only modules](stdlib/nes.md)
+    * [VIC-20-only modules](stdlib/vic20.md)
+    
+    * [PET-only modules](stdlib/cbm_pet.md)
+    
+    * [`cbm_file` module](stdlib/cbm_file.md)
 
-* [Atari Lynx-only modules](stdlib/lynx.md)
+    * [Apple II-only modules](stdlib/apple2.md)
+    
+    * [NES-only modules](stdlib/nes.md)
+    
+    * [Atari Lynx-only modules](stdlib/lynx.md)
+    
+    * [Game Boy–only modules](stdlib/gb.md)
+    
+    * [X16–only modules](stdlib/x16.md)
+    
+## Guides
 
-* [Game Boy–only modules](stdlib/gb.md)
+* [Differences from C](various/cdiff.md) 
 
-* [X16–only modules](stdlib/x16.md)
+* [Differences from other assemblers](various/asmdiff.md) 
+
+* [Optimization guide](various/optimization.md) 
 
 ## Implementation details
 

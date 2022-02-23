@@ -9,6 +9,7 @@ import millfork.env._
 import millfork.error.Logger
 import millfork.node.MosNiceFunctionProperty
 
+import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
 import scala.util.control.TailCalls.{TailRec, done, tailcall}
 
@@ -147,24 +148,26 @@ object VariableToRegisterOptimization extends AssemblyOptimization[AssemblyLine]
         // assembly functions do not get this optimization
         return code
     }
-    val stillUsedVariables = code.flatMap {
-      case AssemblyLine0(_, _, MemoryAddressConstant(th)) => Some(th.name)
+    val stillUsedVariables = mutable.Set[String]()
+    val variablesWithAddressesTaken = mutable.Set[String]()
+    code.foreach {
+      case AssemblyLine0(_, _, MemoryAddressConstant(th)) => stillUsedVariables += th.name
+      case AssemblyLine0(_, _, SubbyteConstant(MemoryAddressConstant(th), _)) => variablesWithAddressesTaken += th.name
       case _ => None
-    }.toSet
-    val variablesWithAddressesTaken = code.flatMap {
-      case AssemblyLine0(_, _, SubbyteConstant(MemoryAddressConstant(th), _)) => Some(th.name)
-      case _ => None
-    }.toSet
-    val localVariables = f.environment.getAllLocalVariables.filter {
-      case MemoryVariable(name, typ, VariableAllocationMethod.Auto | VariableAllocationMethod.Register) =>
-        typ.size == 1 && !paramVariables(name) && stillUsedVariables(name) && !variablesWithAddressesTaken(name)
+    }
+    val localVariables = mutable.Set[Variable]()
+    val variablesWithRegisterHint = mutable.Set[String]()
+
+    f.environment.getAllLocalVariables.foreach {
+      case v@MemoryVariable(name, typ, alloc@(VariableAllocationMethod.Auto | VariableAllocationMethod.Register)) =>
+       if (typ.size == 1 && !paramVariables(name) && stillUsedVariables(name) && !variablesWithAddressesTaken(name) && !v.isVolatile){
+         localVariables += v
+         if (alloc == VariableAllocationMethod.Register) {
+           variablesWithRegisterHint += v.name
+         }
+       }
       case _ => false
     }
-    val variablesWithRegisterHint = f.environment.getAllLocalVariables.filter {
-      case MemoryVariable(name, typ, VariableAllocationMethod.Register) =>
-        typ.size == 1 && !paramVariables(name) && stillUsedVariables(name) && !variablesWithAddressesTaken(name)
-      case _ => false
-    }.map(_.name).toSet
 
     val variablesWithLifetimes = localVariables.map(v =>
       v.name -> VariableLifetime.apply(v.name, code)
@@ -187,10 +190,12 @@ object VariableToRegisterOptimization extends AssemblyOptimization[AssemblyLine]
       log = log
     )
 
-    val labelsUsedOnce: Set[String] = code.flatMap {
-      case AssemblyLine0(op, _, MemoryAddressConstant(Label(l))) if op != Opcode.LABEL => Some(l)
-      case _ => None
-    }.groupBy(identity).filter(_._2.size == 1).keySet
+    val tmpUsedLabelList = mutable.ListBuffer[String]()
+    code.foreach{
+      case AssemblyLine0(op, _, MemoryAddressConstant(Label(l))) if op != Opcode.LABEL => tmpUsedLabelList += l
+      case _ =>
+    }
+    val labelsUsedOnce: Set[String] = tmpUsedLabelList.groupBy(identity).filter(_._2.size == 1).keySet
 
     val featuresForAcc = FeaturesForAccumulator(
       cmos = options.flag(CompilationFlag.EmitCmosOpcodes),
@@ -417,13 +422,33 @@ object VariableToRegisterOptimization extends AssemblyOptimization[AssemblyLine]
 
       case (AssemblyLine0(SEP | REP, _, _), _) :: xs => None
 
-      case (AssemblyLine0(STY | LDY, Absolute | ZeroPage, MemoryAddressConstant(th)), _) :: xs if th.name == vx =>
-        if (features.indexRegisterTransfers) canBeInlined(xCandidate, yCandidate, zCandidate, features, xs).map(_ + CyclesAndBytes(bytes = 2, cycles = 2))
-        else None
+      case (AssemblyLine0(STY | LDY, Absolute | ZeroPage, MemoryAddressConstant(th)), _) :: xs if th.name == vx && (features.indexRegisterTransfers) =>
+         canBeInlined(xCandidate, yCandidate, zCandidate, features, xs).map(_ + CyclesAndBytes(bytes = 2, cycles = 2))
 
-      case (AssemblyLine0(STX | LDX, Absolute | ZeroPage, MemoryAddressConstant(th)), _) :: xs if th.name == vy =>
-        if (features.indexRegisterTransfers) canBeInlined(xCandidate, yCandidate, zCandidate, features, xs).map(_ + CyclesAndBytes(bytes = 2, cycles = 2))
-        else None
+      case (AssemblyLine0(STX | LDX, Absolute | ZeroPage, MemoryAddressConstant(th)), _) :: xs if th.name == vy && (features.indexRegisterTransfers) =>
+        canBeInlined(xCandidate, yCandidate, zCandidate, features, xs).map(_ + CyclesAndBytes(bytes = 2, cycles = 2))
+
+      case (AssemblyLine0(LDY, Absolute | ZeroPage, MemoryAddressConstant(th)), _) ::
+        (AssemblyLine0(LDA | STA | ADC | SBC | ORA | EOR | AND | CMP, AbsoluteY, _), f) :: xs if th.name == vx && f.y == Unimportant =>
+         canBeInlined(xCandidate, yCandidate, zCandidate, features, xs).map(_ + CyclesAndBytes(bytes = 2, cycles = 2))
+
+      case (AssemblyLine0(LDX, Absolute | ZeroPage, MemoryAddressConstant(th)), _) ::
+        (AssemblyLine0(LDA | STA | ADC | SBC | ORA | EOR | AND | CMP, AbsoluteX, _), f) :: xs if th.name == vy && f.x == Unimportant =>
+         canBeInlined(xCandidate, yCandidate, zCandidate, features, xs).map(_ + CyclesAndBytes(bytes = 2, cycles = 2))
+
+      case (AssemblyLine0(LDY, Absolute | ZeroPage, MemoryAddressConstant(th)), _) ::
+        (AssemblyLine0(SEC | CLC, _, _), _) ::
+        (AssemblyLine0(LDA | STA | ADC | SBC | ORA | EOR | AND | CMP, AbsoluteY, _), f) :: xs if th.name == vx && f.y == Unimportant =>
+         canBeInlined(xCandidate, yCandidate, zCandidate, features, xs).map(_ + CyclesAndBytes(bytes = 2, cycles = 2))
+
+      case (AssemblyLine0(LDX, Absolute | ZeroPage, MemoryAddressConstant(th)), _) ::
+        (AssemblyLine0(SEC | CLC, _, _), _) ::
+        (AssemblyLine0(LDA | STA | ADC | SBC | ORA | EOR | AND | CMP, AbsoluteX, _), f) :: xs if th.name == vy && f.x == Unimportant =>
+         canBeInlined(xCandidate, yCandidate, zCandidate, features, xs).map(_ + CyclesAndBytes(bytes = 2, cycles = 2))
+
+      case (AssemblyLine0(STY | LDY, Absolute | ZeroPage, MemoryAddressConstant(th)), _) :: xs if th.name == vx => None
+
+      case (AssemblyLine0(STX | LDX, Absolute | ZeroPage, MemoryAddressConstant(th)), _) :: xs if th.name == vy => None
 
       case (AssemblyLine(op, Absolute | ZeroPage, MemoryAddressConstant(th), elidability, _), _) :: xs
         if opcodesIdentityTable(op) && features.blastProcessing =>
@@ -702,6 +727,10 @@ object VariableToRegisterOptimization extends AssemblyOptimization[AssemblyLine]
           }
         }
 
+      case (AssemblyLine0(_, TripleAbsolute | ZeroPageWithRelative, _), _) :: xs =>
+        // TODO: maybe improve later?
+        None
+
       case (AssemblyLine0(LABEL, _, _), _) :: xs =>
         None
 
@@ -854,6 +883,7 @@ object VariableToRegisterOptimization extends AssemblyOptimization[AssemblyLine]
                  aCandidate: Option[String],
                  features: FeaturesForIndexRegisters,
                  lines: List[(AssemblyLine, CpuImportance)]): TailRec[List[AssemblyLine]] = {
+    // only one of these will be defined:
     val vx = xCandidate.getOrElse("-")
     val vy = yCandidate.getOrElse("-")
     val vz = zCandidate.getOrElse("-")
@@ -907,7 +937,7 @@ object VariableToRegisterOptimization extends AssemblyOptimization[AssemblyLine]
         if opcodesIdentityTable(op) && th.name == vy =>
         tailcall(inlineVars(xCandidate, yCandidate, zCandidate, aCandidate, features, xs)).map(l.copy(addrMode = AbsoluteY, parameter = features.identityArray) ::  _)
 
-      case (l@AssemblyLine0(LDA | TYA | TXA | TZA | CLA, _, _), _) :: xs if va != "" && isReturn(xs) =>
+      case (l@AssemblyLine0(LDA | TYA | TXA | TZA | CLA, _, _), _) :: xs if aCandidate.isDefined && isReturn(xs) =>
         tailcall(inlineVars(xCandidate, yCandidate, zCandidate, aCandidate, features, xs)).map(l ::  _)
 
       case (l@AssemblyLine0(LDA, _, _), _) ::  (AssemblyLine0(op, Absolute | ZeroPage, MemoryAddressConstant(th)), _) :: xs
@@ -1011,12 +1041,53 @@ object VariableToRegisterOptimization extends AssemblyOptimization[AssemblyLine]
         tailcall(inlineVars(xCandidate, yCandidate, zCandidate, aCandidate, features, xs)).map(AssemblyLine.implied(TYA).pos(s) ::  _)
 
       case (AssemblyLine(LDY, Absolute | ZeroPage, MemoryAddressConstant(th), _, s), _) :: xs
-        if th.name == vx =>
+        if th.name == vx && features.indexRegisterTransfers =>
         tailcall(inlineVars(xCandidate, yCandidate, zCandidate, aCandidate, features, xs)).map(AssemblyLine.implied(TXY).pos(s) ::  _)
 
       case (AssemblyLine(LDX, Absolute | ZeroPage, MemoryAddressConstant(th), _, s), _) :: xs
-        if th.name == vy =>
+        if th.name == vy && features.indexRegisterTransfers =>
         tailcall(inlineVars(xCandidate, yCandidate, zCandidate, aCandidate, features, xs)).map(AssemblyLine.implied(TYX).pos(s) ::  _)
+
+      case (l0@AssemblyLine0(LDY, Absolute | ZeroPage, MemoryAddressConstant(th)), _) ::
+        (l1@AssemblyLine0(LDA | STA | ADC | SBC | AND | ORA | EOR | CMP, AbsoluteY, _), f):: xs
+        if th.name == vx =>
+        if (l1.opcode != STA || f.n == Unimportant && f.z == Unimportant) {
+          tailcall(inlineVars(xCandidate, yCandidate, zCandidate, aCandidate, features, xs)).map(l1.copy(addrMode = AbsoluteX) ::  _)
+        } else if (f.c == Unimportant) {
+          tailcall(inlineVars(xCandidate, yCandidate, zCandidate, aCandidate, features, xs)).map(AssemblyLine.immediate(CPX, 0).pos(l0.source) :: l1.copy(addrMode = AbsoluteX) ::  _)
+        } else {
+          tailcall(inlineVars(xCandidate, yCandidate, zCandidate, aCandidate, features, xs)).map(AssemblyLine.implied(INX).pos(l0.source) :: AssemblyLine.implied(DEX).pos(l0.source) :: l1.copy(addrMode = AbsoluteX) ::  _)
+        }
+
+
+      case (l0@AssemblyLine0(LDX, Absolute | ZeroPage, MemoryAddressConstant(th)), _) ::
+        (l1@AssemblyLine0(LDA | STA | ADC | SBC | AND | ORA | EOR | CMP, AbsoluteX, _), f):: xs
+        if th.name == vy =>
+        if (l1.opcode != STA || f.n == Unimportant && f.z == Unimportant) {
+          tailcall(inlineVars(xCandidate, yCandidate, zCandidate, aCandidate, features, xs)).map(l1.copy(addrMode = AbsoluteY) ::  _)
+        } else if (f.c == Unimportant) {
+          tailcall(inlineVars(xCandidate, yCandidate, zCandidate, aCandidate, features, xs)).map(AssemblyLine.immediate(CPY, 0).pos(l0.source) :: l1.copy(addrMode = AbsoluteY) ::  _)
+        } else {
+          tailcall(inlineVars(xCandidate, yCandidate, zCandidate, aCandidate, features, xs)).map(AssemblyLine.implied(INY).pos(l0.source) :: AssemblyLine.implied(DEY).pos(l0.source) :: l1.copy(addrMode = AbsoluteY) ::  _)
+        }
+
+      case (l0@AssemblyLine0(LDY, Absolute | ZeroPage, MemoryAddressConstant(th)), _) ::
+        (l5@AssemblyLine0(SEC | CLC, _, _), _) ::
+        (l1@AssemblyLine0(LDA | STA | ADC | SBC | AND | ORA | EOR | CMP, AbsoluteY, _), _):: xs
+        if th.name == vx =>
+        tailcall(inlineVars(xCandidate, yCandidate, zCandidate, aCandidate, features, xs)).map(l5 :: l1.copy(addrMode = AbsoluteX) ::  _)
+
+      case (l0@AssemblyLine0(LDX, Absolute | ZeroPage, MemoryAddressConstant(th)), _) ::
+        (l5@AssemblyLine0(SEC | CLC, _, _), _) ::
+        (l1@AssemblyLine0(LDA | STA | ADC | SBC | AND | ORA | EOR | CMP, AbsoluteX, _), _):: xs
+        if th.name == vy =>
+        tailcall(inlineVars(xCandidate, yCandidate, zCandidate, aCandidate, features, xs)).map(l5 :: l1.copy(addrMode = AbsoluteY) ::  _)
+
+      case (AssemblyLine(LDY, Absolute | ZeroPage, MemoryAddressConstant(th), _, s), _) :: xs
+        if th.name == vx => features.log.fatal("Unexpected LDY")
+
+      case (AssemblyLine(LDX, Absolute | ZeroPage, MemoryAddressConstant(th), _, s), _) :: xs
+        if th.name == vy => features.log.fatal("Unexpected LDX")
 
       case (AssemblyLine(LDA, Absolute | ZeroPage, MemoryAddressConstant(th), _, s), _) :: xs
         if th.name == vz =>
@@ -1066,12 +1137,18 @@ object VariableToRegisterOptimization extends AssemblyOptimization[AssemblyLine]
         tailcall(inlineVars(xCandidate, yCandidate, zCandidate, aCandidate, features, xs)).map(AssemblyLine.implied(TYA).pos(s) ::  _)
 
       case (AssemblyLine(STX, Absolute | ZeroPage, MemoryAddressConstant(th), _, s), _) :: xs
-        if th.name == vy =>
+        if th.name == vy && features.indexRegisterTransfers =>
         tailcall(inlineVars(xCandidate, yCandidate, zCandidate, aCandidate, features, xs)).map(AssemblyLine.implied(TXY).pos(s) ::  _)
 
       case (AssemblyLine(STY, Absolute | ZeroPage, MemoryAddressConstant(th), _, s), _) :: xs
-        if th.name == vx =>
+        if th.name == vx && features.indexRegisterTransfers =>
         tailcall(inlineVars(xCandidate, yCandidate, zCandidate, aCandidate, features, xs)).map(AssemblyLine.implied(TYX).pos(s) ::  _)
+
+      case (AssemblyLine(STX, Absolute | ZeroPage, MemoryAddressConstant(th), _, s), _) :: xs
+        if th.name == vy => features.log.fatal("Unexpected STX")
+
+      case (AssemblyLine(STY, Absolute | ZeroPage, MemoryAddressConstant(th), _, s), _) :: xs
+        if th.name == vx => features.log.fatal("Unexpected STY")
 
       case (AssemblyLine(STZ, Absolute | ZeroPage, MemoryAddressConstant(th), _, s), _) :: xs
         if th.name == vx =>

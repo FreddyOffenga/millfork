@@ -252,7 +252,7 @@ class WordMathSuite extends FunSuite with Matchers with AppendedClues {
   }
 
   test("Word addition 5") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Sixteen, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)("""
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Sixteen, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)("""
         | word output @$c000
         | void main () {
         |   word v
@@ -265,6 +265,20 @@ class WordMathSuite extends FunSuite with Matchers with AppendedClues {
         | noinline void barrier() { }
       """.stripMargin){ m =>
       m.readWord(0xc000) should equal(0x509)
+    }
+  }
+
+  test("Word addition 6") {
+    EmuCrossPlatformBenchmarkRun(Cpu.Sixteen, Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Intel8085, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)("""
+        | byte output @$c000
+        | void main () {
+        |  signed16 p
+        |  p = f()
+        |  output = lo(-p)
+        | }
+        | noinline signed16 f() = 6
+      """.stripMargin) { m =>
+      m.readByte(0xc000) should equal((-6) & 0xff)
     }
   }
 
@@ -364,7 +378,7 @@ class WordMathSuite extends FunSuite with Matchers with AppendedClues {
   }
 
   test("Word multiplication 5") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Sixteen, Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)("""
+    EmuCrossPlatformBenchmarkRun(Cpu.Sixteen, Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)("""
         | word output @$c000
         | void main () {
         |   output = alot()
@@ -383,7 +397,7 @@ class WordMathSuite extends FunSuite with Matchers with AppendedClues {
   }
 
   test("Word multiplication optimization") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)("""
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)("""
         | word output @$c000
         | void main () {
         |   output = alot()
@@ -424,7 +438,7 @@ class WordMathSuite extends FunSuite with Matchers with AppendedClues {
   }
 
   private def multiplyCase1(x: Int, y: Int): Unit = {
-    EmuCrossPlatformBenchmarkRun(Cpu.Sixteen, Cpu.Mos, Cpu.Z80, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Sixteen, Cpu.Mos, Cpu.Z80, Cpu.Intel8086, Cpu.Motorola6809)(
       s"""
          | import zp_reg
          | word output @$$c000
@@ -459,7 +473,7 @@ class WordMathSuite extends FunSuite with Matchers with AppendedClues {
   }
 
   private def multiplyCase2(x: Int, y: Int): Unit = {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8086, Cpu.Motorola6809)(
       s"""
          | import zp_reg
          | word output1 @$$c000
@@ -502,7 +516,7 @@ class WordMathSuite extends FunSuite with Matchers with AppendedClues {
   }
 
   private def divisionCase1(x: Int, y: Int): Unit = {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos /*,Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086*/)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       s"""
          | import zp_reg
          | word output_q1 @$$c000
@@ -561,7 +575,7 @@ class WordMathSuite extends FunSuite with Matchers with AppendedClues {
   }
 
   private def divisionCase2(x: Int, y: Int): Unit = {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       s"""
          | import zp_reg
          | word output_q1 @$$c000
@@ -616,7 +630,7 @@ class WordMathSuite extends FunSuite with Matchers with AppendedClues {
   }
 
   private def divisionCase4(x: Int, y: Int): Unit = {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       s"""
          | import zp_reg
          | word output_q1 @$$c000
@@ -640,7 +654,7 @@ class WordMathSuite extends FunSuite with Matchers with AppendedClues {
       m.readWord(0xc000) should equal(x / y) withClue s"= $x / $y"
       m.readByte(0xc002) should equal(x % y) withClue s"= $x %% $y"
       m.readWord(0xc004) should equal(x / y) withClue s"= $x / $y"
-      m.readByte(0xc006) should equal(x % y) withClue s"= $x %% $y"
+      m.readWord(0xc006) should equal(x % y) withClue s"= $x %% $y"
     }
   }
 
@@ -661,7 +675,7 @@ class WordMathSuite extends FunSuite with Matchers with AppendedClues {
   }
 
   private def multiplyCaseWW1(x: Int, y: Int): Unit = {
-    EmuUnoptimizedCrossPlatformRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080)(
+    EmuUnoptimizedCrossPlatformRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Motorola6809)(
       s"""
          | import zp_reg
          | word output0 @$$c000
@@ -695,7 +709,7 @@ class WordMathSuite extends FunSuite with Matchers with AppendedClues {
   }
 
   private def divisionCaseWW1(x: Int, y: Int): Unit = {
-    EmuUnoptimizedCrossPlatformRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp)(
+    EmuUnoptimizedCrossPlatformRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Motorola6809)(
       s"""
          | import zp_reg
          | word output0 @$$c000
@@ -723,7 +737,7 @@ class WordMathSuite extends FunSuite with Matchers with AppendedClues {
 //      i <- Seq(5324)
 //      j <- Seq(-1)
     } {
-      EmuUnoptimizedCrossPlatformRun(/*Cpu.Mos, */Cpu.Z80)(
+      EmuUnoptimizedCrossPlatformRun(Cpu.Mos, Cpu.Z80, Cpu.Motorola6809)(
         s"""
            | word output0 @$$c000
            | word output1 @$$c002
@@ -745,6 +759,110 @@ class WordMathSuite extends FunSuite with Matchers with AppendedClues {
         m.readWord(0xc000) should equal((i - j) & 0xffff) withClue s"= $i - $j (c000)"
         m.readWord(0xc002) should equal((i - j) & 0xffff) withClue s"= $i - $j (c002)"
         m.readWord(0xc004) should equal((i - j) & 0xffff) withClue s"= $i - $j (c004)"
+      }
+    }
+  }
+
+  test("Sign extension in multiplication") {
+    for {
+      x <- Seq(0, -10, 10, 120, -120)
+      y <- Seq(0, -10, 10, 120, -120)
+      angle <- Seq(0, 156, 100, 67)
+    } {
+      EmuUnoptimizedCrossPlatformRun(Cpu.Mos, Cpu.Z80, Cpu.Motorola6809)(
+        s"""
+           | import zp_reg
+           | array(sbyte) sinTable @$$c100= for i,0,to,256+64-1 [sin(i,127)]
+           | sbyte outputX @$$c000
+           | sbyte outputY @$$c001
+           | noinline sbyte rotatePointX(sbyte x,sbyte y,byte angle) {
+           |  sbyte rx
+           |  sbyte s,c
+           |  s = sinTable[angle]
+           |  angle = angle + 64
+           |  c = sinTable[angle]
+           |  rx = lo(((word(x)*word(c))>>7) - ((word(y)*word(s))>>7))
+           |
+           |  return rx;
+           |}
+           |
+           |noinline sbyte rotatePointY(sbyte x,sbyte y,byte angle) {
+           |  sbyte ry
+           |  sbyte s,c
+           |  s = sinTable[angle]
+           |  angle = angle + 64
+           |  c = sinTable[angle]
+           |  ry = lo(((word(x)*word(s))>>7) + ((word(y)*word(c))>>7))
+           |  return ry;
+           |}
+           | void main () {
+           |  outputX = rotatePointX($x, $y, $angle)
+           |  outputY = rotatePointY($x, $y, $angle)
+           | }
+            """.
+          stripMargin){m =>
+        for (a <- 0 until (256+64)) {
+          val expected = (127 * math.sin(a * math.Pi / 128)).round.toInt
+          m.readByte(0xc100 + a).toByte should equal(expected.toByte) withClue s"= sin($a)"
+        }
+        val s = (127 * math.sin(angle * math.Pi / 128)).round.toInt
+        val c = (127 * math.sin((angle + 64) * math.Pi / 128)).round.toInt
+        val rx = (x * c >> 7) - (y * s >> 7)
+        val ry = (x * s >> 7) + (y * c >> 7)
+        m.readByte(0xc000).toByte should equal(rx.toByte) withClue s"= x of ($x,$y) @ $angle"
+        m.readByte(0xc001).toByte should equal(ry.toByte) withClue s"= y of ($x,$y) @ $angle"
+      }
+    }
+  }
+
+  test("Signed multiplication with type promotion") {
+    for {
+      (t1, t2) <- Seq("sbyte" -> "word", "sbyte" -> "signed16", "byte" -> "signed16", "signed16" -> "word")
+      x <- Seq(0, -1, 1, 120, -120)
+      x2 <- Seq(0, -1, 1, 120, -120)
+    } {
+      val x1 = if (t1 == "byte") x & 0xff else x
+      EmuUnoptimizedCrossPlatformRun(Cpu.Mos, Cpu.Z80, Cpu.Motorola6809)(
+        s"""
+           | import zp_reg
+           | signed16 output @$$c000
+           | bool typeOk @$$c002
+           | void main () {
+           |  $t1 v1
+           |  v1 = $x1
+           |  $t2 v2
+           |  v2 = $x2
+           |  memory_barrier()
+           |  output = v1 * v2
+           |  typeOk = typeof(v1 * v2) == typeof(signed16)
+           | }""".
+          stripMargin) { m =>
+        m.readWord(0xc000).toShort should equal((x1 * x2).toShort) withClue s"= $t1($x1) * $t2($x2)"
+        m.readByte(0xc002) should equal(1) withClue s"= typeof($t1 * $t2)"
+      }
+    }
+  }
+
+  test("Signed multiplication with type promotion 2") {
+    for {
+      t2 <- Seq("sbyte", "signed16", "byte", "word")
+      x1 <- Seq(0, -1, 1, 120, -120)
+      x <- Seq(0, -1, 1, 120, -120)
+    } {
+      val x2 = if (t2.startsWith("s")) x else if (t2.startsWith("w")) x & 0xffff else x & 0xff
+      EmuUnoptimizedCrossPlatformRun(Cpu.Mos, Cpu.Z80, Cpu.Motorola6809)(
+        s"""
+           | import zp_reg
+           | signed16 output @$$c000
+           | void main () {
+           |  output = $x1
+           |  $t2 v2
+           |  v2 = $x2
+           |  memory_barrier()
+           |  output *= v2
+           | }""".
+          stripMargin) { m =>
+        m.readWord(0xc000).toShort should equal((x1 * x2).toShort) withClue s"= signed16($x1) * $t2($x2)"
       }
     }
   }

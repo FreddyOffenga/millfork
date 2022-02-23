@@ -10,6 +10,7 @@ import javax.swing.SwingUtilities
 import millfork._
 import millfork.assembly.AssemblyOptimization
 import millfork.assembly.z80.ZLine
+import millfork.assembly.z80.opt.VeryLateI80AssemblyOptimizations
 import millfork.compiler.z80.Z80Compiler
 import millfork.compiler.{CompilationContext, LabelGenerator}
 import millfork.env.{Environment, InitializedArray, InitializedMemoryVariable, NormalFunction}
@@ -32,7 +33,7 @@ object EmuI86Run {
     val source = Files.readAllLines(Paths.get(filename), StandardCharsets.US_ASCII).asScala.mkString("\n")
     val options = CompilationOptions(EmuPlatform.get(millfork.Cpu.Intel8086), Map(
           CompilationFlag.LenientTextEncoding -> true
-        ), None, 0, Map(), JobContext(TestErrorReporting.log, new LabelGenerator))
+        ), None, 0, Map(), EmuPlatform.textCodecRepository, JobContext(TestErrorReporting.log, new LabelGenerator))
     val PreprocessingResult(preprocessedSource, features, _) = Preprocessor.preprocessForTest(options, source)
     TestErrorReporting.log.debug(s"Features: $features")
     TestErrorReporting.log.info(s"Parsing $filename")
@@ -53,7 +54,7 @@ object EmuI86Run {
   private def get(path: String): Program =
     synchronized { cache.getOrElseUpdate(path, preload(path)).getOrElse(throw new IllegalStateException()) }
 
-  def cachedMath(): Program = get("include/i80_math.mfk") // TODO
+  def cachedMath(): Program = get("include/i80/i80_math.mfk") // TODO
   def cachedStdio(): Program = get("src/test/resources/include/dummy_stdio.mfk")
 
   val leakSaverCpu = new Intel8086()
@@ -87,7 +88,7 @@ class EmuI86Run(nodeOptimizations: List[NodeOptimization], assemblyOptimizations
       CompilationFlag.OptimizeForSize -> this.optimizeForSize,
       CompilationFlag.SubroutineExtraction -> optimizeForSize,
       CompilationFlag.LenientTextEncoding -> true)
-    val options = CompilationOptions(platform, millfork.Cpu.defaultFlags(millfork.Cpu.Intel8086).map(_ -> true).toMap ++ extraFlags, None, 0, Map(), JobContext(log, new LabelGenerator))
+    val options = CompilationOptions(platform, millfork.Cpu.defaultFlags(millfork.Cpu.Intel8086).map(_ -> true).toMap ++ extraFlags, None, 0, Map(), EmuPlatform.textCodecRepository, JobContext(log, new LabelGenerator))
     log.hasErrors = false
     log.verbosity = 999
     var effectiveSource = source
@@ -135,7 +136,7 @@ class EmuI86Run(nodeOptimizations: List[NodeOptimization], assemblyOptimizations
         val env2 = new Environment(None, "", CpuFamily.I80, options)
         env2.collectDeclarations(program, options)
         val assembler = new Z80ToX86Crossassembler(program, env2, platform)
-        val output = assembler.assemble(callGraph, assemblyOptimizations, options)
+        val output = assembler.assemble(callGraph, assemblyOptimizations, options, VeryLateI80AssemblyOptimizations.All)
         println(";;; compiled: -----------------")
         output.asm.takeWhile(s => !(s.startsWith(".") && s.contains("= $"))).filterNot(_.contains("////; DISCARD_")).foreach(println)
         println(";;; ---------------------------")
@@ -161,7 +162,7 @@ class EmuI86Run(nodeOptimizations: List[NodeOptimization], assemblyOptimizations
         }
 
         (0x100 until 0x2000).takeWhile(memoryBank.occupied(_)).map(memoryBank.output).grouped(16).map(_.map(i => f"$i%02x").mkString(" ")).foreach(log.debug(_))
-        val resetN = source.contains("-'") && !options.flag(CompilationFlag.EmitExtended80Opcodes)
+        val resetN = (source.contains("-'") || source.contains("$-")) && !options.flag(CompilationFlag.EmitExtended80Opcodes)
         val resetNMethod = {
           val clazz = classOf[Z80Core]
           val method = clazz.getDeclaredMethod("resetN")

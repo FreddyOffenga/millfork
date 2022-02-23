@@ -4,7 +4,7 @@ import millfork.assembly._
 import millfork.assembly.mos._
 import millfork.assembly.opt.FlowCache
 import millfork.env._
-import millfork.node.MosRegister
+import millfork.node.{MosRegister, NiceFunctionProperty}
 
 /**
   * @author Karol Stasiak
@@ -48,6 +48,8 @@ case class CpuImportance(a: Importance = UnknownImportance,
                          r2: Importance = UnknownImportance,
                          r3: Importance = UnknownImportance,
                         ) {
+
+  def setPseudoRegister(importance: Importance): CpuImportance = this.copy(r0 = importance, r1 = importance, r2 = importance, r3 = importance)
 
   def setPseudoRegister(regOffset: Int, importance: Importance): CpuImportance = regOffset match {
     case 0 => this.copy(r0 = importance)
@@ -141,10 +143,12 @@ object ReverseFlowAnalyzer {
     m = Important, w = Important,
     r0 = Important, r1 = Important, r2 = Important, r3 = Important)
 
+  def analyze(f: NormalFunction, code: List[AssemblyLine], optimizationContext: OptimizationContext): List[CpuImportance] =
+    analyze(code, optimizationContext.niceFunctionProperties)
+
   //noinspection RedundantNewCaseClass
-  def analyze(f: NormalFunction, code: List[AssemblyLine], optimizationContext: OptimizationContext): List[CpuImportance] = {
+  def analyze(code: List[AssemblyLine], niceFunctionProperties: Set[(NiceFunctionProperty, String)]): List[CpuImportance] = {
     cache.get(code).foreach(return _)
-    val niceFunctionProperties = optimizationContext.niceFunctionProperties
     val importanceArray = Array.fill[CpuImportance](code.length)(new CpuImportance())
     val codeArray = code.toArray
 
@@ -170,6 +174,16 @@ object ReverseFlowAnalyzer {
               case _ => false
             }
             currentImportance = if (labelIndex < 0) finalImportance else importanceArray(labelIndex) ~ currentImportance
+          case AssemblyLine0(opcode, Immediate, _) if OpcodeClasses.ShortConditionalBranching(opcode) =>
+            currentImportance = finalImportance
+          case AssemblyLine0(opcode, ZeroPageWithRelative, StructureConstant(_, List(_, MemoryAddressConstant(Label(l))))) if OpcodeClasses.SingleBitBranch(opcode) =>
+            val L = l
+            val labelIndex = codeArray.indexWhere {
+              case AssemblyLine0(LABEL, _, MemoryAddressConstant(Label(L))) => true
+              case _ => false
+            }
+            // TODO: check which zpreg is actually important
+            currentImportance = if (labelIndex < 0) finalImportance else (importanceArray(labelIndex) ~ currentImportance).setPseudoRegister(Important)
           case _ =>
         }
         currentLine match {
@@ -178,7 +192,7 @@ object ReverseFlowAnalyzer {
             // this case has to be handled first, because the generic JSR importance handler is too conservative
             var result = importanceBeforeJsr
             fun.params match {
-              case AssemblyParamSignature(params) =>
+              case AssemblyOrMacroParamSignature(params) =>
                 params.foreach(_.variable match {
                   case RegisterVariable(MosRegister.A, _) =>
                     result = result.copy(a = Important)
@@ -270,6 +284,8 @@ object ReverseFlowAnalyzer {
             if ((n & 0x20) != 0) currentImportance = currentImportance.copy(m = Unimportant)
             if ((n & 0x40) != 0) currentImportance = currentImportance.copy(v = Unimportant)
             if ((n & 0x80) != 0) currentImportance = currentImportance.copy(n = Unimportant)
+          case AssemblyLine0(TII | TIA | TAI | TDD | TIN, _, _) =>
+            currentImportance = currentImportance.setPseudoRegister(Important)
 
           case AssemblyLine0(opcode, addrMode, _) =>
             val reallyIgnoreC =

@@ -1,0 +1,26 @@
+const word dlAddr = $3000
+const word dliAddr = $3100
+
+const array(byte) dl @ dlAddr = [
+  BLANK_8,BLANK_8,BLANK_8,
+  LMS|MODE_2,$00,$40,
+  MODE_2,MODE_2,MODE_2,MODE_2,
+  BLANK_8|DLI,
+  MODE_2,MODE_2,MODE_2,MODE_2,
+  JVB,@word[dlAddr]
+]
+
+volatile word SDLST @ $230
+
+interrupt void dli() @ dliAddr {
+  gtia_colpf2 = $de
+  antic_wsync = 1
+}
+
+void main() {
+  SDLST = dl.addr
+  os_VDSLST = dli.addr
+  antic_nmien = $c0
+
+  while true {}
+}

@@ -105,7 +105,7 @@ object ReverseFlowAnalyzerPerOpcode {
     }),
     BIT -> (currentImportance => {
       currentImportance.copy(
-        a = currentImportance.z,
+        a = currentImportance.a ~ currentImportance.z,
         n = Unimportant,
         z = Unimportant,
         v = Unimportant,
@@ -211,6 +211,12 @@ object ReverseFlowAnalyzerPerOpcode {
     STX_W -> (importance => importance.copy(x = Important, w = Important)),
     STY_W -> (importance => importance.copy(y = Important, w = Important)),
     STZ_W -> (importance => importance.copy(iz = Important, m = Important)),
+
+    ST0 -> (importance => importance.copy(a = Important)),
+    ST1 -> (importance => importance.copy(a = Important)),
+    ST2 -> (importance => importance.copy(a = Important)),
+    TAM -> (importance => importance.copy(a = Important)),
+    TMA -> (importance => importance.copy(a = Unimportant)),
 
   )
 

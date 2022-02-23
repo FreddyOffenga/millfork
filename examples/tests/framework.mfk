@@ -1,0 +1,74 @@
+import stdio
+
+pointer current_suite_name
+byte current_test_number
+word failure_count = 0
+
+#if ZX_SPECTRUM || CBM || NEC_PC88 || ATARI_8 || AMSTRAD_CPC || APPLE_2 || COCO
+
+import keyboard
+alias wait_after_failure = readkey
+
+#elseif MSX
+
+alias wait_after_failure = readline
+
+#else
+
+macro void wait_after_failure() { while true {} }
+
+#endif
+
+void start_suite(pointer suite_name) {
+    putstrz("Running "z)
+    putstrz(suite_name)
+    new_line()
+    current_suite_name = suite_name
+    current_test_number = 0
+}
+
+void print_failure() {
+    putstrz("[FAIL]: "z)
+    putstrz(current_suite_name)
+    putstrz(" #"z)
+    putword(current_test_number)
+    new_line()
+    failure_count += 1
+}
+
+void print_success() {
+    putstrz("[ OK ]: "z)
+    putstrz(current_suite_name)
+    putstrz(" #"z)
+    putword(current_test_number)
+    new_line()
+}
+
+void assert_equal(word expected, word actual) {
+    current_test_number += 1
+    if actual != expected {
+        print_failure()
+        putstrz("Expected: "z)
+        putword(expected)
+        putstrz("  Actual: "z)
+        putword(actual)
+        new_line()
+        wait_after_failure()
+#if PRINT_SUCCESSES
+     } else {
+         print_success()
+#endif
+    }
+}
+
+void assert_true(bool result) {
+    current_test_number += 1
+    if not(result) {
+        print_failure()
+        readkey()
+#if PRINT_SUCCESSES
+     } else {
+         print_success()
+#endif
+    }
+}

@@ -1,8 +1,9 @@
 name := "millfork"
 
-version := "0.3.9-SNAPSHOT"
+version := "0.3.31-SNAPSHOT"
 
-scalaVersion := "2.12.10"
+// keep it at 2.12.11 for GraalVM native image compatibility!
+scalaVersion := "2.12.11"
 
 resolvers += Resolver.mavenLocal
 
@@ -12,25 +13,42 @@ libraryDependencies += "org.apache.commons" % "commons-configuration2" % "2.2"
 
 libraryDependencies += "org.scalatest" %% "scalatest" % "3.0.8" % "test"
 
-libraryDependencies += "com.codingrodent.microprocessor" % "Z80Processor" % "2.0.2" % "test"
+val testDependencies = Seq(
+  "com.codingrodent.microprocessor" % "Z80Processor" % "2.0.2" % "test",
+  // see: https://github.com/NeatMonster/Intel8086
+  "NeatMonster" % "Intel8086" % "1.0" % "test" from "https://github.com/NeatMonster/Intel8086/raw/master/IBMPC.jar",
+  // these three are not in Maven Central or any other public repo
+  // get them from the following links or just build millfork without tests:
+  // https://github.com/sethm/symon/tree/71905fdb1998ee4f142260879504bc46cf27648f
+  // https://github.com/andrew-hoffman/halfnes/tree/061
+  // https://github.com/trekawek/coffee-gb/tree/coffee-gb-1.0.0
+  // https://github.com/sorenroug/osnine-java/tree/b77349a6c314e1362e69b7158c385ac6f89b7ab8
+  "com.loomcom.symon" % "symon" % "1.3.0-SNAPSHOT" % "test",
+  "com.grapeshot" % "halfnes" % "061" % "test",
+  "eu.rekawek.coffeegb" % "coffee-gb" % "1.0.0" % "test",
+  "roug.org.osnine" % "osnine-core" % "2.0-SNAPSHOT" % "test",
+  "org.graalvm.sdk" % "graal-sdk" % "20.2.0" % "test",
+  "org.graalvm.js" % "js" % "20.2.0" % "test",
+  "org.graalvm.js" % "js-scriptengine" % "20.2.0" % "test"
+)
 
-// see: https://github.com/NeatMonster/Intel8086
-libraryDependencies += "NeatMonster" % "Intel8086" % "1.0" % "test" from "https://github.com/NeatMonster/Intel8086/raw/master/IBMPC.jar"
+val includesTests = System.getProperty("skipTests") == null
 
-// these three are not in Maven Central or any other public repo
-// get them from the following links or just build millfork without tests:
-// https://github.com/sethm/symon/tree/71905fdb1998ee4f142260879504bc46cf27648f
-// https://github.com/andrew-hoffman/halfnes/tree/061
-// https://github.com/trekawek/coffee-gb/tree/coffee-gb-1.0.0
-// https://github.com/sorenroug/osnine-java/tree/1b4e059c5886fe01e8901c70684f7eedefe65010
+libraryDependencies ++=(
+  if (includesTests) {
+    println("Including test dependencies")
+    testDependencies
+  } else {
+    Seq[ModuleID]()
+  }
+)
 
-libraryDependencies += "com.loomcom.symon" % "symon" % "1.3.0-SNAPSHOT" % "test"
-
-libraryDependencies += "com.grapeshot" % "halfnes" % "061" % "test"
-
-libraryDependencies += "eu.rekawek.coffeegb" % "coffee-gb" % "1.0.0" % "test"
-
-libraryDependencies += "roug.org.osnine" % "osnine-core" % "1.0-SNAPSHOT" % "test"
+(if (!includesTests) {
+  // Disable assembling tests
+  sbt.internals.DslEntry.fromSettingsDef(test in assembly := {})
+} else {
+  sbt.internals.DslEntry.fromSettingsDef(Seq[sbt.Def.Setting[_]]())
+})
 
 mainClass in Compile := Some("millfork.Main")
 

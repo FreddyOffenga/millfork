@@ -1,7 +1,7 @@
 package millfork.test
 
 import millfork.Cpu
-import millfork.test.emu.{EmuUnoptimizedCrossPlatformRun, EmuUnoptimizedIntel8080Run, EmuUnoptimizedIntel8085Run, EmuUnoptimizedSharpRun, EmuUnoptimizedZ80NextRun, EmuUnoptimizedZ80Run}
+import millfork.test.emu.{EmuUnoptimizedCrossPlatformRun, EmuUnoptimizedIntel8080Run, EmuUnoptimizedIntel8085Run, EmuUnoptimizedR800Run, EmuUnoptimizedSharpRun, EmuUnoptimizedZ80NextRun, EmuUnoptimizedZ80Run}
 import org.scalatest.{FunSuite, Matchers}
 
 /**
@@ -275,6 +275,27 @@ class Z80AssemblySuite extends FunSuite with Matchers {
         | }
       """.stripMargin)
   }
+
+  test("Intel hex syntax disambiguation") {
+    EmuUnoptimizedCrossPlatformRun(Cpu.Intel8080)(
+      """
+        | #pragma intel_syntax
+        | asm void main () {
+        |   lxi h, 0c000h
+        |   mvi m, 0b1h
+        |   mvi m, 0b1_h
+        |   mvi m, 0b_1_h
+        |   inx h
+        |   mvi m, 0b1
+        |   mvi m, 0b_1
+        |   ret
+        |   }
+        |   """.stripMargin){m =>
+      m.readByte(0xc000) should equal(0xb1)
+      m.readByte(0xc001) should equal(1)
+    }
+  }
+
   test("Common I80 instructions (without RST, Intel syntax)") {
     EmuUnoptimizedCrossPlatformRun(Cpu.Intel8080, Cpu.Intel8086)(
       """
@@ -288,17 +309,17 @@ class Z80AssemblySuite extends FunSuite with Matchers {
         |   inx b
         |   inr b
         |   dcr b
-        |   mvi b,6
+        |   mvi b,6h
         |   rlc
         |   dad b
         |   ldax b
         |   dcx b
         |   inr c
         |   dcr c
-        |   mvi c,0eh
+        |   mvi c,0e_h
         |   rrc
         |
-        |   lxi d,1111h
+        |   lxi d,11_11h
         |   stax d
         |   inx d
         |   inr d
@@ -491,7 +512,7 @@ class Z80AssemblySuite extends FunSuite with Matchers {
         |   jmp main
         |   cnz main
         |   push b
-        |   adi 1
+        |   adi 1_h
         |
         |   rz
         |   ret
@@ -873,6 +894,281 @@ class Z80AssemblySuite extends FunSuite with Matchers {
       """.stripMargin)
   }
 
+  test("Extended I80 instructions (Intel syntax)") {
+    EmuUnoptimizedZ80Run(
+      """
+        | #pragma intel_syntax
+        | asm void main () {
+        |   ret
+        |
+        |   reti
+        |
+        |   jmpr main
+        |   jrnz main
+        |   jrz main
+        |   jrnc main
+        |   jrc main
+        |   lspd 34
+        |
+        |   rlcr b
+        |   rlcr c
+        |   rlcr d
+        |   rlcr e
+        |   rlcr h
+        |   rlcr l
+        |   rlcr m
+        |   rlcr a
+        |
+        |   rrcr b
+        |   rrcr c
+        |   rrcr d
+        |   rrcr e
+        |   rrcr h
+        |   rrcr l
+        |   rrcr m
+        |   rrcr a
+        |
+        |   ralr b
+        |   ralr c
+        |   ralr d
+        |   ralr e
+        |   ralr h
+        |   ralr l
+        |   ralr m
+        |   ralr a
+        |
+        |   rarr b
+        |   rarr c
+        |   rarr d
+        |   rarr e
+        |   rarr h
+        |   rarr l
+        |   rarr m
+        |   rarr a
+        |
+        |   slar b
+        |   slar c
+        |   slar d
+        |   slar e
+        |   slar h
+        |   slar l
+        |   slar m
+        |   slar a
+        |
+        |   srar b
+        |   srar c
+        |   srar d
+        |   srar e
+        |   srar h
+        |   srar l
+        |   srar m
+        |   srar a
+        |
+        |   srlr b
+        |   srlr c
+        |   srlr d
+        |   srlr e
+        |   srlr h
+        |   srlr l
+        |   srlr m
+        |   srlr a
+        |
+        |   bit 1,a
+        |   res 1,a
+        |   setb 1,a
+        |   set 1,a
+        |   bit 1,m
+        |   res 1,m
+        |   setb 1,m
+        |   set 1,m
+        |
+        |   ret
+        | }
+      """.stripMargin)
+  }
+
+  test("Z80 instructions with IX (Intel syntax)") {
+    EmuUnoptimizedZ80Run(
+      """
+        | #pragma intel_syntax
+        | asm void main () {
+        |   ret
+        |   addx 0
+        |   adcx 0
+        |   subx 0
+        |   sbcx 0
+        |   andx 0
+        |   xorx 0
+        |   orx 0
+        |   cmpx 0
+        |
+        |   rrcx 0
+        |   rarx 0
+        |   rlcx 0
+        |   ralx 0
+        |   slax 0
+        |   srax 0
+        |   srlx 0
+        |   sllx 0
+        |
+        |   popix
+        |   pushix
+        |   pop ix
+        |   push ix
+        |   dadx sp
+        |   dadx ix
+        |   dadx d
+        |   dadx b
+        |   inxix
+        |   dcxix
+        |   inx ix
+        |   dcx ix
+        |   lxix 3
+        |   lixd 3
+        |   sixd 3
+        |   xtix
+        |   pcix
+        |   spix
+        |   ldx a,0
+        |   stx a,0
+        |
+        |   ret
+        | }
+      """.stripMargin)
+  }
+
+  test("Z80 instructions with IY (Intel syntax)") {
+    EmuUnoptimizedZ80Run(
+      """
+        | #pragma intel_syntax
+        | asm void main () {
+        |   ret
+        |   addy 0
+        |   adcy 0
+        |   suby 0
+        |   sbcy 0
+        |   andy 0
+        |   xory 0
+        |   ory 0
+        |   cmpy 0
+        |
+        |   rrcy 0
+        |   rary 0
+        |   rlcy 0
+        |   raly 0
+        |   slay 0
+        |   sray 0
+        |   srly 0
+        |   slly 0
+        |
+        |   popiy
+        |   pushiy
+        |   pop iy
+        |   push iy
+        |   dady sp
+        |   dady iy
+        |   dady d
+        |   dady b
+        |   inxiy
+        |   dcxiy
+        |   inx iy
+        |   dcx iy
+        |   lxiy 3
+        |   liyd 3
+        |   siyd 3
+        |   xtiy
+        |   pciy
+        |   spiy
+        |   ldy a,0
+        |   sty a,0
+        |
+        |   ret
+        | }
+      """.stripMargin)
+  }
+
+  test("Other Z80 instructions (Intel syntax)") {
+    EmuUnoptimizedZ80Run(
+      """
+        | #pragma intel_syntax
+        | asm void main () {
+        |   ret
+        |
+        |   djnz main
+        |   exaf
+        |   exx
+        |
+        |   sllr b
+        |   sllr c
+        |   sllr d
+        |   sllr e
+        |   sllr h
+        |   sllr l
+        |   sllr m
+        |   sllr a
+        |
+        |   inp b
+        |   outp b
+        |   dsbc b
+        |   lbcd 34
+        |   neg
+        |   retn
+        |   im0
+        |   stai
+        |   inp c
+        |   outp c
+        |   dadc b
+        |   lbcd 7
+        |   star
+        |   inp d
+        |   outp d
+        |   dsbc d
+        |   lded 55
+        |   im1
+        |   ldai
+        |   inp e
+        |   outp e
+        |   dadc d
+        |   lded 33
+        |   im2
+        |   ldar
+        |
+        |   inp h
+        |   outp h
+        |   dsbc h
+        |   rrd
+        |   inp l
+        |   outp l
+        |   dadc h
+        |   rld
+        |   dsbc sp
+        |   inp a
+        |   outp a
+        |   dadc sp
+        |   lspd 345
+        |
+        |   ldi
+        |   cci
+        |   ini
+        |   outi
+        |   ldd
+        |   ccd
+        |   ind
+        |   outd
+        |   ldir
+        |   ccir
+        |   inir
+        |   outir
+        |   lddr
+        |   ccdr
+        |   indr
+        |   outdr
+        |
+        |   ret
+        | }
+      """.stripMargin)
+  }
+
   test("Gameboy instructions") {
     EmuUnoptimizedSharpRun(
       """
@@ -1007,6 +1303,76 @@ class Z80AssemblySuite extends FunSuite with Matchers {
         |   pixelad
         |   setae
         |   test 8
+        |   ret
+        | }
+    """.stripMargin)
+  }
+
+  test("Z80 halves of index registers") {
+    EmuUnoptimizedZ80NextRun(
+      """
+        | #pragma zilog_syntax
+        | asm void main () {
+        |   ret
+        |   inc ixh
+        |   inc ixl
+        |   inc iyh
+        |   inc iyl
+        |   dec ixh
+        |   dec ixl
+        |   dec iyh
+        |   dec iyl
+        |   ld a,ixh
+        |   ld a,ixl
+        |   ld iyh,a
+        |   ld iyl,a
+        |   add a,iyl
+        |   adc a,iyl
+        |   sub iyl
+        |   sbc a,iyl
+        |   or iyl
+        |   xor iyl
+        |   and iyl
+        |   cp iyl
+        |   ld ixh,0
+        |   ret
+        | }
+    """.stripMargin)
+  }
+
+  test("R800 stuff") {
+    EmuUnoptimizedR800Run(
+      """
+        | #pragma zilog_syntax
+        | asm void main () {
+        |   ret
+        |   mulub a,b
+        |   mulub a,c
+        |   mulub a,d
+        |   mulub a,e
+        |   muluw hl,bc
+        |   muluw hl,sp
+        |   inc ixh
+        |   inc ixl
+        |   inc iyh
+        |   inc iyl
+        |   dec ixh
+        |   dec ixl
+        |   dec iyh
+        |   dec iyl
+        |   ld a,ixh
+        |   ld a,ixl
+        |   ld iyh,a
+        |   ld iyl,a
+        |   add a,iyl
+        |   adc a,iyl
+        |   sub iyl
+        |   sbc a,iyl
+        |   or iyl
+        |   xor iyl
+        |   and iyl
+        |   cp iyl
+        |   ld ixh,0
         |   ret
         | }
     """.stripMargin)

@@ -4,7 +4,7 @@ import millfork.assembly._
 import millfork.compiler.{AbstractCompiler, CompilationContext}
 import millfork.env._
 import millfork.error.Logger
-import millfork.node.{CallGraph, Expression, FunctionCallExpression, LiteralExpression, NiceFunctionProperty, Program, SumExpression}
+import millfork.node.{CallGraph, Expression, FunctionCallExpression, LiteralExpression, NiceFunctionProperty, Position, Program, SumExpression}
 import millfork._
 import millfork.assembly.z80.ZLine
 
@@ -19,7 +19,12 @@ import scala.collection.mutable.ArrayBuffer
   * @author Karol Stasiak
   */
 
-case class AssemblerOutput(code: Map[String, Array[Byte]], asm: Array[String], labels: List[(String, (Int, Int))])
+case class AssemblerOutput(code: Map[String, Array[Byte]],
+                           bankLayoutInFile: BankLayoutInFile,
+                           asm: Array[String],
+                           labels: List[(String, (String, Int))],
+                           endLabels: Map[String, (Char, Int)],
+                           breakpoints: List[(Int, Int)])
 
 abstract class AbstractAssembler[T <: AbstractCode](private val program: Program,
                                            private val rootEnv: Environment,
@@ -33,10 +38,13 @@ abstract class AbstractAssembler[T <: AbstractCode](private val program: Program
   var initializedVariablesSize: Int = 0
   protected val log: Logger = rootEnv.log
 
-  val mem = new CompiledMemory(platform.bankNumbers.toList, platform.bankFill, platform.isBigEndian)
-  val labelMap: mutable.Map[String, (Int, Int)] = mutable.Map()
-  private val bytesToWriteLater = mutable.ListBuffer[(String, Int, Constant)]()
-  private val wordsToWriteLater = mutable.ListBuffer[(String, Int, Constant)]()
+  val labelMap: mutable.Map[String, (String, Int)] = mutable.Map()
+  val endLabelMap: mutable.Map[String, (Char, Int)] = mutable.Map()
+  val unimportantLabelMap: mutable.Map[String, (String, Int)] = mutable.Map()
+  val mem = new CompiledMemory(platform.bankNumbers.toList, platform.bankFill, platform.isBigEndian, labelMap, log)
+  val breakpointSet: mutable.Set[(Int, Int)] = mutable.Set()
+  private val bytesToWriteLater = mutable.ListBuffer[(String, Int, Constant, Option[Position])]()
+  private val wordsToWriteLater = mutable.ListBuffer[(String, Int, Constant, Option[Position])]()
 
   def writeByte(bank: String, addr: Int, value: Byte): Unit = {
     mem.banks(bank).occupied(addr) = true
@@ -53,20 +61,20 @@ abstract class AbstractAssembler[T <: AbstractCode](private val program: Program
     mem.banks(bank).output(addr) = value.toByte
   }
 
-  def writeByte(bank: String, addr: Int, value: Constant): Unit = {
+  def writeByte(bank: String, addr: Int, value: Constant)(implicit position: Option[Position]): Unit = {
     mem.banks(bank).occupied(addr) = true
     mem.banks(bank).initialized(addr) = true
     mem.banks(bank).readable(addr) = true
     value match {
       case NumericConstant(x, _) =>
-        if (x > 0xff) log.error("Byte overflow: " + x.toHexString)
+        if (x > 0xff) log.error("Byte overflow: " + x.toHexString, position)
         mem.banks(bank).output(addr) = x.toByte
       case _ =>
-        bytesToWriteLater += ((bank, addr, value))
+        bytesToWriteLater += ((bank, addr, value, position))
     }
   }
 
-  def writeWord(bank: String, addr: Int, value: Constant): Unit = {
+  def writeWord(bank: String, addr: Int, value: Constant)(implicit position: Option[Position]): Unit = {
     mem.banks(bank).occupied(addr) = true
     mem.banks(bank).occupied(addr + 1) = true
     mem.banks(bank).initialized(addr) = true
@@ -76,44 +84,47 @@ abstract class AbstractAssembler[T <: AbstractCode](private val program: Program
     if (platform.isBigEndian) {
       value match {
         case NumericConstant(x, _) =>
-          if (x > 0xffff) log.error("Word overflow")
+          if (x > 0xffff) log.error("Word overflow", position)
           mem.banks(bank).output(addr) = (x >> 8).toByte
           mem.banks(bank).output(addr + 1) = x.toByte
         case _ =>
-          wordsToWriteLater += ((bank, addr, value))
+          wordsToWriteLater += ((bank, addr, value, position))
       }
     } else {
       value match {
         case NumericConstant(x, _) =>
-          if (x > 0xffff) log.error("Word overflow")
+          if (x > 0xffff) log.error("Word overflow", position)
           mem.banks(bank).output(addr) = x.toByte
           mem.banks(bank).output(addr + 1) = (x >> 8).toByte
         case _ =>
-          wordsToWriteLater += ((bank, addr, value))
+          wordsToWriteLater += ((bank, addr, value, position))
       }
     }
   }
 
   var stackProbeCount = 0
 
-  def deepConstResolve(c: Constant): Long = {
+  def deepConstResolve(c: Constant)(implicit position: Option[Position]): Long = {
     def stackProbe(n: Int): Int = {
       stackProbeCount += 1
       if (n == 0) 0 else stackProbe(n - 1) + 1
     }
     c match {
       case NumericConstant(v, _) => v
+      case IfConstant(c, t, f) =>
+        if (deepConstResolve(c) != 0) deepConstResolve(t) else deepConstResolve(f)
       case AssertByte(inner) =>
         val value = deepConstResolve(inner)
         if (value.toByte == value) value else {
-          log.error("Invalid relative jump: " + c + " calculated offset: " + value)
+          log.error("Invalid relative jump: " + inner + " calculated offset: " + value, position)
           -2 // spin
         }
       case MemoryAddressConstant(th) =>
         try {
           if (labelMap.contains(th.name)) return labelMap(th.name)._2
           if (labelMap.contains(th.name + "`")) return labelMap(th.name)._2
-          if (labelMap.contains(th.name + ".addr")) return labelMap.getOrElse[(Int, Int)](th.name, labelMap(th.name + ".array"))._2
+          if (labelMap.contains(th.name + ".addr")) return labelMap.getOrElse[(String, Int)](th.name, labelMap(th.name + ".array"))._2
+          if (unimportantLabelMap.contains(th.name)) return labelMap(th.name)._2
           val x1 = env.maybeGet[ConstantThing](th.name).map(_.value)
           val x2 = env.maybeGet[ConstantThing](th.name + "`").map(_.value)
           val x3 = env.maybeGet[NormalFunction](th.name).flatMap(_.address)
@@ -123,9 +134,9 @@ abstract class AbstractAssembler[T <: AbstractCode](private val program: Program
           val x = x1.orElse(x2).orElse(x3).orElse(x4).orElse(x5).orElse(x6)
           stackProbe(700)
           x match {
-            case Some(cc) =>
+            case Some(cc) if c != cc =>
               deepConstResolve(cc)
-            case None =>
+            case _ =>
               log.fatal("Failed to resolve constant: " + th.name)
               println(th)
               ???
@@ -134,16 +145,25 @@ abstract class AbstractAssembler[T <: AbstractCode](private val program: Program
           case _: StackOverflowError =>
             log.fatal("Stack overflow " + c)
         }
-      case UnexpandedConstant(name, _) =>
+      case badThing@UnexpandedConstant(name, _) =>
         if (labelMap.contains(name)) labelMap(name)._2
-        else ???
+        else if (unimportantLabelMap.contains(name)) unimportantLabelMap(name)._2
+        else {
+          println(badThing)
+          ???
+        }
       case SubbyteConstant(cc, i) => deepConstResolve(cc).>>>(i * 8).&(0xff)
       case s: StructureConstant =>
-        s.typ.size match {
-          case 0 => 0
-          case 1 => deepConstResolve(s.subbyte(0))
-          case 2 => if (platform.isBigEndian) deepConstResolve(s.subwordReversed(0)) else deepConstResolve(s.subword(0)) // TODO: endianness?
-          case _ => ???
+        try {
+          s.typ.size match {
+            case 0 => 0
+            case 1 => deepConstResolve(s.subbyte(0))
+            case 2 => if (platform.isBigEndian) deepConstResolve(s.subwordReversed(0)) else deepConstResolve(s.subword(0)) // TODO: endianness?
+            case _ => ???
+          }
+        } catch {
+          case _: StackOverflowError =>
+            log.fatal("Stack overflow " + c)
         }
       case CompoundConstant(operator, lc, rc) =>
         val l = deepConstResolve(lc)
@@ -157,6 +177,8 @@ abstract class AbstractAssembler[T <: AbstractCode](private val program: Program
           case MathOperator.Shl9 => (l << r) & 0x1ff
           case MathOperator.Shr => l >>> r
           case MathOperator.Shr9 => ((l & 0x1ff) >>> r) & 0xff
+          case MathOperator.Minimum => l min r
+          case MathOperator.Maximum => l max r
           case MathOperator.DecimalPlus => asDecimal(l, r, _ + _)
           case MathOperator.DecimalPlus9 => asDecimal(l, r, _ + _) & 0x1ff
           case MathOperator.DecimalMinus => asDecimal(l, r, _ - _)
@@ -164,15 +186,21 @@ abstract class AbstractAssembler[T <: AbstractCode](private val program: Program
           case MathOperator.DecimalShl => asDecimal(l, 1 << r, _ * _)
           case MathOperator.DecimalShl9 => asDecimal(l, 1 << r, _ * _) & 0x1ff
           case MathOperator.DecimalShr => asDecimal(l, 1 << r, _ / _)
+          case MathOperator.Equal => if (l == r) 1 else 0
+          case MathOperator.NotEqual => if (l != r) 1 else 0
+          case MathOperator.Less => if (l < r) 1 else 0
+          case MathOperator.LessEqual => if (l <= r) 1 else 0
+          case MathOperator.Greater => if (l > r) 1 else 0
+          case MathOperator.GreaterEqual => if (l >= r) 1 else 0
           case MathOperator.And => l & r
           case MathOperator.Exor => l ^ r
           case MathOperator.Or => l | r
           case MathOperator.Divide => if (r == 0) {
-            log.error("Constant division by zero")
+            log.error("Constant division by zero", position)
             0
           } else l / r
           case MathOperator.Modulo => if (r == 0) {
-            log.error("Constant division by zero")
+            log.error("Constant division by zero", position)
             0
           } else l % r
         }
@@ -195,7 +223,11 @@ abstract class AbstractAssembler[T <: AbstractCode](private val program: Program
 
   protected def subbyte(c: Constant, index: Int, totalSize: Int): Constant = if (platform.isBigEndian) c.subbyteBe(index, totalSize) else c.subbyte(index)
 
-  def assemble(callGraph: CallGraph, unfilteredOptimizations: Seq[AssemblyOptimization[T]], options: CompilationOptions): AssemblerOutput = {
+  def assemble(
+                callGraph: CallGraph,
+                unfilteredOptimizations: Seq[AssemblyOptimization[T]],
+                options: CompilationOptions,
+                veryLateOptimizations: (Set[NiceFunctionProperty], CompilationOptions) => Seq[AssemblyOptimization[T]]): AssemblerOutput = {
     mem.programName = options.outputFileName.getOrElse("MILLFORK")
     val platform = options.platform
     val variableAllocators = platform.variableAllocators
@@ -223,14 +255,53 @@ abstract class AbstractAssembler[T <: AbstractCode](private val program: Program
     val potentiallyInlineable: Map[String, Int] = inliningResult.potentiallyInlineableFunctions
     var functionsThatCanBeCalledFromInlinedFunctions: Set[String] = inliningResult.nonInlineableFunctions
 
-    env.allocateVariables(None, mem, callGraph, variableAllocators, options, labelMap.put, 1, forZpOnly = true)
-    env.allocateVariables(None, mem, callGraph, variableAllocators, options, labelMap.put, 2, forZpOnly = true)
-    env.allocateVariables(None, mem, callGraph, variableAllocators, options, labelMap.put, 3, forZpOnly = true)
+    for(th <- env.things.values) {
+      th match {
+        case tim: VariableInMemory =>
+          tim.toAddress match {
+            case NumericConstant(n, _) =>
+              val bank = tim.bank(options)
+              val m = mem.banks(bank)
+              for (i <- 0 until tim.typ.size) {
+                m.occupied(i + n.toInt) = true
+              }
+              labelMap.put(tim.name, bank -> n.toInt)
+              endLabelMap.put(tim.name,
+                (if (tim.isInstanceOf[InitializedMemoryVariable]) 'V' else 'v') ->
+                  (n.toInt + tim.typ.size - 1))
+            case _ =>
+          }
+        case arr: MfArray =>
+          arr.toAddress match {
+            case NumericConstant(n, _) =>
+              val bank = arr.bank(options)
+              val m = mem.banks(bank)
+              for (i <- 0 until arr.sizeInBytes) {
+                m.occupied(i + n.toInt) = true
+              }
+              labelMap.put(arr.name, bank -> n.toInt)
+              endLabelMap.put(arr.name,
+                (if (arr.isInstanceOf[InitializedArray]) 'A' else 'a') ->
+                  (n.toInt + arr.sizeInBytes - 1))
+            case _ =>
+          }
+        case _ =>
+      }
+    }
+
+    env.allocateVariables(None, mem, callGraph, variableAllocators, options, labelMap.put, endLabelMap.put, 1, forZpOnly = true)
+    env.allocateVariables(None, mem, callGraph, variableAllocators, options, labelMap.put, endLabelMap.put, 2, forZpOnly = true)
+    env.allocateVariables(None, mem, callGraph, variableAllocators, options, labelMap.put, endLabelMap.put, 3, forZpOnly = true)
 
     var inlinedFunctions = Map[String, List[T]]()
     val compiledFunctions = mutable.Map[String, CompiledFunction[T]]()
     val recommendedCompilationOrder = callGraph.recommendedCompilationOrder
     val niceFunctionProperties = mutable.Set[(NiceFunctionProperty, String)]()
+    env.things.values.foreach {
+      case function: FunctionInMemory =>
+        gatherFunctionOptimizationHints(options, niceFunctionProperties, function)
+      case _ =>
+    }
     val aliases = env.getAliases
     recommendedCompilationOrder.foreach { f =>
       if (!env.isAlias(f)) env.maybeGet[NormalFunction](f).foreach { function =>
@@ -253,7 +324,19 @@ abstract class AbstractAssembler[T <: AbstractCode](private val program: Program
           case None =>
             log.trace("Not inlining " + f, function.position)
             functionsThatCanBeCalledFromInlinedFunctions += function.name
-            compiledFunctions(f) = NormalCompiledFunction(function.declaredBank.getOrElse(platform.defaultCodeBank), code, function.address.isDefined, function.alignment)
+            val thisFunctionNiceProperties = niceFunctionProperties.filter(_._2.==(f)).map(_._1).toSet
+            val labelMapImm = labelMap.toMap
+            val niceFunctionPropertiesImm = niceFunctionProperties.toSet
+            val extraOptimizedCode = veryLateOptimizations(thisFunctionNiceProperties, options).foldLeft(code) { (c, opt) =>
+              val ocode = opt.optimize(function, c, OptimizationContext(options, labelMapImm, env.maybeGet[ThingInMemory]("__reg"), niceFunctionPropertiesImm))
+              if (ocode eq c) code else quickSimplify(ocode)
+            }
+            compiledFunctions(f) = NormalCompiledFunction(
+              function.declaredBank.getOrElse(platform.defaultCodeBank),
+              extraOptimizedCode,
+              function.address.isDefined,
+              function.optimizationHints,
+              function.alignment)
             optimizedCodeSize += code.map(_.sizeInBytes).sum
             if (options.flag(CompilationFlag.InterproceduralOptimization)) {
               gatherNiceFunctionProperties(options, niceFunctionProperties, function, code)
@@ -262,7 +345,6 @@ abstract class AbstractAssembler[T <: AbstractCode](private val program: Program
         function.environment.removedThings.foreach(env.removeVariable)
       }
     }
-    deduplicate(options, compiledFunctions)
     if (log.traceEnabled) {
       niceFunctionProperties.toList.groupBy(_._2).mapValues(_.map(_._1).sortBy(_.toString)).toList.sortBy(_._1).foreach{ case (fname, properties) =>
           log.trace(fname.padTo(30, ' ') + properties.mkString(" "))
@@ -277,7 +359,7 @@ abstract class AbstractAssembler[T <: AbstractCode](private val program: Program
 
     val objectsThatMayBeUnused = Set("__constant8", "identity$",
       "__mul_u8u8u8", "__mul_u16u8u16", "__mul_u16u16u16",
-      "__mod_u8u8u8u8", "__div_u8u8u8u8",
+      "__divmod_u8u8u8u8", "__mod_u8u8u8u8", "__div_u8u8u8u8",
       "__divmod_u16u8u16u8", "__mod_u16u8u16u8", "__div_u16u8u16u8",
       "__divmod_u16u16u16u16", "__mod_u16u16u16u16", "__div_u16u16u16u16") ++
       compiledFunctions.keySet.filter(_.endsWith(".trampoline"))
@@ -297,9 +379,10 @@ abstract class AbstractAssembler[T <: AbstractCode](private val program: Program
         })
       }
     })
+    deduplicate(options, compiledFunctions.filterNot(o => unusedRuntimeObjects(o._1)))
 
     env.allPreallocatables.filterNot(o => unusedRuntimeObjects(o.name)).foreach {
-      case thing@InitializedArray(name, Some(NumericConstant(address, _)), items, _, _, elementType, readOnly, _) =>
+      case thing@InitializedArray(name, Some(NumericConstant(address, _)), items, _, _, elementType, readOnly, _, _) =>
         val bank = thing.bank(options)
         if (!readOnly && options.platform.ramInitialValuesBank.isDefined) {
             log.error(s"Preinitialized writable array $name cannot be put at a fixed address")
@@ -311,8 +394,8 @@ abstract class AbstractAssembler[T <: AbstractCode](private val program: Program
         for (item <- items) {
           env.eval(item) match {
             case Some(c) =>
-              for(i <- 0 until elementType.size) {
-                writeByte(bank, index, subbyte(c, i, elementType.size))
+              for(i <- 0 until elementType.alignedSize) {
+                writeByte(bank, index, subbyte(c, i, elementType.size))(item.position)
                 bank0.occupied(index) = true
                 bank0.initialized(index) = true
                 bank0.writeable(index) = true
@@ -326,15 +409,16 @@ abstract class AbstractAssembler[T <: AbstractCode](private val program: Program
         }
         printArrayToAssemblyOutput(assembly, name, elementType, items)
         initializedVariablesSize += thing.sizeInBytes
-      case thing@InitializedArray(name, Some(_), items, _, _, _, _, _) => ???
+      case thing@InitializedArray(name, Some(_), items, _, _, _, _, _, _) => ???
       case f: NormalFunction if f.address.isDefined =>
         val bank = f.bank(options)
         val bank0 = mem.banks(bank)
         val index = f.address.get.asInstanceOf[NumericConstant].value.toInt
         compiledFunctions(f.name) match {
-          case NormalCompiledFunction(_, functionCode, _, _) =>
-            labelMap(f.name) = bank0.index -> index
+          case NormalCompiledFunction(_, functionCode, _, _, _) =>
+            labelMap(f.name) = bank -> index
             val end = outputFunction(bank, functionCode, index, assembly, options)
+            endLabelMap(f.name) = 'F' -> (end - 1)
             for (i <- index until end) {
               bank0.occupied(index) = true
               bank0.initialized(index) = true
@@ -376,13 +460,14 @@ abstract class AbstractAssembler[T <: AbstractCode](private val program: Program
     val sortedCompilerFunctions = compiledFunctions.toList.sortBy { case (_, cf) => cf.orderKey }
     for (layoutStage <- 0 until layoutStageCount) {
       sortedCompilerFunctions.filterNot(o => unusedRuntimeObjects(o._1)).foreach {
-        case (_, NormalCompiledFunction(_, _, true, _)) =>
+        case (_, NormalCompiledFunction(_, _, true, _, _)) =>
         // already done before
-        case (name, th@NormalCompiledFunction(bank, functionCode, false, alignment)) if layoutStage == getLayoutStageNcf(name, th) =>
+        case (name, th@NormalCompiledFunction(bank, functionCode, false, optimizationFlags, alignment)) if layoutStage == getLayoutStageNcf(name, th) =>
           val size = functionCode.map(_.sizeInBytes).sum
           val bank0 = mem.banks(bank)
           val index = codeAllocators(bank).allocateBytes(bank0, options, size, initialized = true, writeable = false, location = AllocationLocation.High, alignment = alignment)
-          labelMap(name) = bank0.index -> index
+          labelMap(name) = bank -> index
+          endLabelMap(name) = 'F' -> (index + size - 1)
           justAfterCode += bank -> outputFunction(bank, functionCode, index, assembly, options)
         case _ =>
       }
@@ -395,9 +480,9 @@ abstract class AbstractAssembler[T <: AbstractCode](private val program: Program
       if (layoutStage == 0) {
         // force early allocation of text literals:
         env.allPreallocatables.filterNot(o => unusedRuntimeObjects(o.name)).foreach {
-          case thing@InitializedArray(_, _, items, _, _, _, _, _) =>
+          case thing@InitializedArray(_, _, items, _, _, _, _, _, _) =>
             items.foreach(env.eval(_))
-          case InitializedMemoryVariable(_, _, _, value, _, _, _) =>
+          case InitializedMemoryVariable(_, _, _, value, _, _, _, _) =>
             env.eval(value)
           case _ =>
         }
@@ -405,9 +490,9 @@ abstract class AbstractAssembler[T <: AbstractCode](private val program: Program
 
       if (layoutStage == defaultStage && options.flag(CompilationFlag.LUnixRelocatableCode)) {
         env.allThings.things.foreach {
-          case (_, m@UninitializedMemoryVariable(name, typ, _, _, _, _)) if name.endsWith(".addr") || env.maybeGet[Thing](name + ".array").isDefined =>
+          case (_, m@UninitializedMemoryVariable(name, typ, _, _, _, _, _)) if name.endsWith(".addr") || env.maybeGet[Thing](name + ".array").isDefined =>
             val isUsed = compiledFunctions.values.exists {
-              case NormalCompiledFunction(_, functionCode, _, _) => functionCode.exists(_.parameter.isRelatedTo(m))
+              case NormalCompiledFunction(_, functionCode, _, _,  _) => functionCode.exists(_.parameter.isRelatedTo(m))
               case _ => false
             }
             //          println(m.name -> isUsed)
@@ -416,7 +501,7 @@ abstract class AbstractAssembler[T <: AbstractCode](private val program: Program
               if (bank != "default") ???
               val bank0 = mem.banks(bank)
               var index = codeAllocators(bank).allocateBytes(bank0, options, typ.size + 1, initialized = true, writeable = false, location = AllocationLocation.High, alignment = m.alignment)
-              labelMap(name) = bank0.index -> (index + 1)
+              labelMap(name) = bank -> (index + 1)
               val altName = m.name.stripPrefix(env.prefix) + "`"
               val thing = if (name.endsWith(".addr")) env.get[ThingInMemory](name.stripSuffix(".addr")) else env.get[ThingInMemory](name + ".array")
               env.things += altName -> ConstantThing(altName, NumericConstant(index, 2), env.get[Type]("pointer"))
@@ -430,7 +515,7 @@ abstract class AbstractAssembler[T <: AbstractCode](private val program: Program
                 throw new IllegalStateException("LUnix cannot run on big-endian architectures")
               }
               for (i <- 0 until typ.size) {
-                writeByte(bank, index, subbyte(c, i, typ.size))
+                writeByte(bank, index, subbyte(c, i, typ.size))(None)
                 assembly.append("    " + bytePseudoopcode + " " + subbyte(c, i, typ.size).quickSimplify)
                 index += 1
               }
@@ -460,14 +545,15 @@ abstract class AbstractAssembler[T <: AbstractCode](private val program: Program
           }
         }
         env.allPreallocatables.filterNot(o => unusedRuntimeObjects(o.name)).foreach {
-          case thing@InitializedArray(name, None, items, _, _, elementType, readOnly, alignment) if readOnly == readOnlyPass && layoutStage == getLayoutStageThing(thing) =>
+          case thing@InitializedArray(name, None, items, _, _, elementType, readOnly, _, alignment) if readOnly == readOnlyPass && layoutStage == getLayoutStageThing(thing) =>
             val bank = thing.bank(options)
             if (options.platform.ramInitialValuesBank.isDefined && !readOnly && bank != "default") {
-              log.error(s"Preinitialized writable array `$name` should be defined in the `default` bank")
+              log.error(s"Preinitialized writable array `$name` should be defined in the `default` bank, did you forget mark it as const?")
             }
             val bank0 = mem.banks(bank)
             var index = codeAllocators(bank).allocateBytes(bank0, options, thing.sizeInBytes, initialized = true, writeable = true, location = AllocationLocation.High, alignment = alignment)
-            labelMap(name) = bank0.index -> index
+            labelMap(name) = bank -> index
+            endLabelMap(name) = 'A' -> (index + thing.sizeInBytes - 1)
             if (!readOnlyPass) {
               rwDataStart = rwDataStart.min(index)
               rwDataEnd = rwDataEnd.max(index + thing.sizeInBytes)
@@ -479,7 +565,7 @@ abstract class AbstractAssembler[T <: AbstractCode](private val program: Program
               env.eval(item) match {
                 case Some(c) =>
                   for (i <- 0 until elementType.size) {
-                    writeByte(bank, index, subbyte(c, i, elementType.size))
+                    writeByte(bank, index, subbyte(c, i, elementType.size))(item.position)
                     index += 1
                   }
                 case None =>
@@ -490,17 +576,18 @@ abstract class AbstractAssembler[T <: AbstractCode](private val program: Program
             printArrayToAssemblyOutput(assembly, name, elementType, items)
             initializedVariablesSize += items.length
             justAfterCode += bank -> index
-          case m@InitializedMemoryVariable(name, None, typ, value, _, alignment, _) if !readOnlyPass && layoutStage == getLayoutStageThing(m) =>
+          case m@InitializedMemoryVariable(name, None, typ, value, _, _, alignment, _) if !readOnlyPass && layoutStage == getLayoutStageThing(m) =>
             val bank = m.bank(options)
             if (options.platform.ramInitialValuesBank.isDefined && bank != "default") {
               log.error(s"Preinitialized variable `$name` should be defined in the `default` bank")
             }
             val bank0 = mem.banks(bank)
-            var index = codeAllocators(bank).allocateBytes(bank0, options, typ.size, initialized = true, writeable = true, location = AllocationLocation.High, alignment = alignment)
-            labelMap(name) = bank0.index -> index
+            var index = codeAllocators(bank).allocateBytes(bank0, options, typ.alignedSize, initialized = true, writeable = true, location = AllocationLocation.High, alignment = alignment)
+            labelMap(name) = bank -> index
+            endLabelMap(name) = 'V' -> (index + typ.size - 1)
             if (!readOnlyPass) {
               rwDataStart = rwDataStart.min(index)
-              rwDataEnd = rwDataEnd.max(index + typ.size)
+              rwDataEnd = rwDataEnd.max(index + typ.alignedSize)
             }
             val altName = m.name.stripPrefix(env.prefix) + "`"
             env.things += altName -> ConstantThing(altName, NumericConstant(index, 2), env.get[Type]("pointer"))
@@ -509,7 +596,7 @@ abstract class AbstractAssembler[T <: AbstractCode](private val program: Program
             env.eval(value) match {
               case Some(c) =>
                 for (i <- 0 until typ.size) {
-                  writeByte(bank, index, subbyte(c, i, typ.size))
+                  writeByte(bank, index, subbyte(c, i, typ.size))(value.position)
                   assembly.append("    " + bytePseudoopcode + " " + subbyte(c, i, typ.size).quickSimplify)
                   index += 1
                 }
@@ -533,26 +620,30 @@ abstract class AbstractAssembler[T <: AbstractCode](private val program: Program
         val db = mem.banks("default")
         val ib = mem.banks(ivBank)
         val size = rwDataEnd - rwDataStart
+        if (size > 0 && !labelMap.contains("init_rw_memory")) {
+          log.warn("The program contains initialized variables, but it never calls init_rw_memory().")
+        }
         if (size < 0) log.fatal("Negative writable memory size. It's a compiler bug.")
         val ivAddr = codeAllocators(ivBank).allocateBytes(ib, options, size, initialized = true, writeable = false, AllocationLocation.High, NoAlignment)
-        labelMap += "__rwdata_init_start" -> (ib.index -> ivAddr)
-        labelMap += "__rwdata_init_end" -> (ib.index -> (ivAddr + size))
-        labelMap += "__rwdata_size" -> (ib.index -> size)
+        unimportantLabelMap += "__rwdata_init_start" -> (ivBank -> ivAddr)
+        unimportantLabelMap += "__rwdata_init_end" -> (ivBank -> (ivAddr + size))
+        unimportantLabelMap += "__rwdata_size" -> (ivBank -> size)
         for (i <- 0 until size) {
           ib.output(ivAddr + i) = db.output(rwDataStart + i)
+          db.outputted(rwDataStart + i) = true
         }
         val debugArray = Array.fill[Option[Constant]](size)(None)
         bytesToWriteLater ++= bytesToWriteLater.flatMap{
-          case ("default", addr, value) if addr >= rwDataStart && addr < rwDataEnd =>
+          case ("default", addr, value, position) if addr >= rwDataStart && addr < rwDataEnd =>
             debugArray(addr - rwDataStart) = Some(value)
-            Some(ivBank, addr + ivAddr - rwDataStart, value)
+            Some(ivBank, addr + ivAddr - rwDataStart, value, position)
           case _ => None
         }
         wordsToWriteLater ++= wordsToWriteLater.flatMap {
-          case ("default", addr, value) if addr >= rwDataStart && addr < rwDataEnd =>
+          case ("default", addr, value, position) if addr >= rwDataStart && addr < rwDataEnd =>
             debugArray(addr - rwDataStart) = Some(value.loByte)
             debugArray(addr - rwDataStart + 1) = Some(value.hiByte)
-            Some(ivBank, addr + ivAddr - rwDataStart, value)
+            Some(ivBank, addr + ivAddr - rwDataStart, value, position)
           case _ => None
         }
         assembly.append("* = $" + ivAddr.toHexString)
@@ -567,43 +658,47 @@ abstract class AbstractAssembler[T <: AbstractCode](private val program: Program
       variableAllocators("default").notifyAboutEndOfData(rwDataEnd)
     }
     variableAllocators.foreach { case (b, a) => a.notifyAboutEndOfCode(justAfterCode(b)) }
-    env.allocateVariables(None, mem, callGraph, variableAllocators, options, labelMap.put, 2, forZpOnly = false)
-    env.allocateVariables(None, mem, callGraph, variableAllocators, options, labelMap.put, 3, forZpOnly = false)
+    env.allocateVariables(None, mem, callGraph, variableAllocators, options, labelMap.put, endLabelMap.put, 2, forZpOnly = false)
+    env.allocateVariables(None, mem, callGraph, variableAllocators, options, labelMap.put, endLabelMap.put, 3, forZpOnly = false)
 
     val defaultBank = mem.banks("default").index
     if (platform.freeZpBytes.nonEmpty) {
       val zpUsageOffset = platform.freeZpBytes.min
       val zeropageOccupation = zpOccupied.slice(zpUsageOffset, platform.freeZpBytes.max + 1)
-      labelMap += "__zeropage_usage" -> (defaultBank, zeropageOccupation.lastIndexOf(true) - zeropageOccupation.indexOf(true) + 1)
-      labelMap += "__zeropage_first" -> (defaultBank, zpUsageOffset + (zeropageOccupation.indexOf(true) max 0))
-      labelMap += "__zeropage_last" -> (defaultBank, zpUsageOffset + (zeropageOccupation.lastIndexOf(true) max 0))
-      labelMap += "__zeropage_end" -> (defaultBank, zpUsageOffset + zeropageOccupation.lastIndexOf(true) + 1)
+      unimportantLabelMap += "__zeropage_usage" -> ("default", zeropageOccupation.lastIndexOf(true) - zeropageOccupation.indexOf(true) + 1)
+      unimportantLabelMap += "__zeropage_first" -> ("default", zpUsageOffset + (zeropageOccupation.indexOf(true) max 0))
+      unimportantLabelMap += "__zeropage_last" -> ("default", zpUsageOffset + (zeropageOccupation.lastIndexOf(true) max 0))
+      unimportantLabelMap += "__zeropage_end" -> ("default", zpUsageOffset + zeropageOccupation.lastIndexOf(true) + 1)
     } else {
-      labelMap += "__zeropage_usage" -> (defaultBank -> 0)
-      labelMap += "__zeropage_first" -> (defaultBank -> 3)
-      labelMap += "__zeropage_last" -> (defaultBank -> 2)
-      labelMap += "__zeropage_end" -> (defaultBank -> 3)
+      unimportantLabelMap += "__zeropage_usage" -> ("default" -> 0)
+      unimportantLabelMap += "__zeropage_first" -> ("default" -> 3)
+      unimportantLabelMap += "__zeropage_last" -> ("default" -> 2)
+      unimportantLabelMap += "__zeropage_end" -> ("default" -> 3)
     }
-    labelMap += "__rwdata_start" -> (defaultBank -> rwDataStart)
-    labelMap += "__rwdata_end" -> (defaultBank -> rwDataEnd)
-    labelMap += "__heap_start" -> (defaultBank -> variableAllocators("default").heapStart)
+    unimportantLabelMap += "__rwdata_start" -> ("default" -> rwDataStart)
+    unimportantLabelMap += "__rwdata_end" -> ("default" -> rwDataEnd)
+    unimportantLabelMap += "__heap_start" -> ("default" -> variableAllocators("default").heapStart)
     for (segment <- platform.bankNumbers.keys) {
-      val allocator = options.platform.variableAllocators(segment)
-      labelMap += s"segment.$segment.start" -> (defaultBank -> allocator.startAt)
-      labelMap += s"segment.$segment.end" -> (defaultBank -> (allocator.endBefore - 1))
-      labelMap += s"segment.$segment.heapstart" -> (defaultBank -> allocator.heapStart)
-      labelMap += s"segment.$segment.length" -> (defaultBank -> (allocator.endBefore - allocator.startAt))
-      labelMap += s"segment.$segment.bank" -> (defaultBank -> platform.bankNumbers(segment))
+      val variableAllocator = options.platform.variableAllocators(segment)
+      val codeAllocator = options.platform.codeAllocators(segment)
+      unimportantLabelMap += s"segment.$segment.start" -> ("default" -> codeAllocator.startAt)
+      unimportantLabelMap += s"segment.$segment.codeend" -> ("default" -> (codeAllocator.endBefore - 1))
+      unimportantLabelMap += s"segment.$segment.datastart" -> ("default" -> variableAllocator.startAt)
+      unimportantLabelMap += s"segment.$segment.heapstart" -> ("default" -> variableAllocator.heapStart)
+      unimportantLabelMap += s"segment.$segment.end" -> ("default" -> (variableAllocator.endBefore - 1))
+      unimportantLabelMap += s"segment.$segment.length" -> ("default" -> (variableAllocator.endBefore - codeAllocator.startAt))
+      unimportantLabelMap += s"segment.$segment.bank" -> ("default" -> platform.bankNumbers(segment))
+      unimportantLabelMap += s"segment.$segment.fill" -> ("default" -> platform.bankFill(segment))
     }
 
     env = rootEnv.allThings
 
-    for ((bank, addr, b) <- bytesToWriteLater) {
-      val value = deepConstResolve(b)
+    for ((bank, addr, b, position) <- bytesToWriteLater) {
+      val value = deepConstResolve(b)(position)
       mem.banks(bank).output(addr) = value.toByte
     }
-    for ((bank, addr, b) <- wordsToWriteLater) {
-      val value = deepConstResolve(b)
+    for ((bank, addr, b, position) <- wordsToWriteLater) {
+      val value = deepConstResolve(b)(position)
       if (platform.isBigEndian) {
         mem.banks(bank).output(addr) = value.>>>(8).toByte
         mem.banks(bank).output(addr + 1) = value.toByte
@@ -620,33 +715,106 @@ abstract class AbstractAssembler[T <: AbstractCode](private val program: Program
       mem.banks(bank).start = start
       mem.banks(bank).end = end
     }
-
-    labelMap.toList.sorted.foreach { case (l, (_, v)) =>
-      assembly += f"$l%-30s = $$$v%04X"
+    for (bank <- mem.banks.keys.toSeq.sorted) {
+      val b = mem.banks(bank)
+      if (b.start >= 0 && b.end >= 0) {
+        val (allotedStart, allotedEndBefore) = {
+          val al1 = variableAllocators(bank)
+          val al2 = codeAllocators(bank)
+          (al1.startAt max al2.startAt) -> (al1.endBefore max al2.endBefore)
+        }
+        val holes = (b.start to b.end).count(i => !b.occupied(i))
+        val freeMemory = (allotedStart until allotedEndBefore).count(i => !b.occupied(i))
+        val largeHoles = {
+          val builder = Seq.newBuilder[(Int, Int)]
+          var i = b.start
+          while(i < b.end) {
+            if (b.occupied(i)) {
+              i+= 1
+            } else {
+              val holeSize = b.occupied.segmentLength(!_, i)
+              if (holeSize >= 4) {
+                builder += i -> (i + holeSize - 1)
+              }
+              i += holeSize
+            }
+          }
+          builder.result()
+        }
+        val size = b.end - b.start + 1
+        log.info(f"Segment ${bank}%s: $$${b.start}%04x-$$${b.end}%04x, size: $size%d B ($freeMemory B free, of which unused gaps $holes%d B)")
+        if (largeHoles.nonEmpty) {
+          log.info("Unused gaps: " + largeHoles.map{ case (s,e) => f"$$$s%04x-$$$e%04x"}.mkString(", "))
+        }
+        // TODO: report holes:
+      }
     }
-    labelMap.toList.sortBy { case (a, (_, v)) => v -> a }.foreach { case (l, (_, v)) =>
+    if (platform.cpuFamily == CpuFamily.M6502) {
+      val occupied = mem.banks("default").occupied
+      val allocator = options.platform.variableAllocators("default").zeropage
+      val freeZp = allocator.preferredOrder.getOrElse(allocator.startAt until allocator.endBefore).count(a => !occupied(a))
+      log.info(f"Free zero page memory: $freeZp B")
+    }
+
+    val allLabelList = labelMap.toList ++ unimportantLabelMap.toList
+    allLabelList.sorted.foreach { case (l, (_, v)) =>
+      endLabelMap.get(l) match {
+        case Some((category, end)) =>
+          assembly += f"$l%-30s = $$$v%04X  ;-$$$end%04X $category%s"
+        case _ =>
+          assembly += f"$l%-30s = $$$v%04X"
+      }
+    }
+    allLabelList.sortBy { case (a, (_, v)) => v -> a }.foreach { case (l, (_, v)) =>
       assembly += f"    ; $$$v%04X = $l%s"
     }
 
+    var bankLayoutInFile = BankLayoutInFile.empty
     // TODO:
     val code = (platform.outputStyle match {
       case OutputStyle.Single | OutputStyle.LUnix => List("default")
       case OutputStyle.PerBank => platform.bankNumbers.keys.toList
-    }).map(b => b -> platform.outputPackager.packageOutput(mem, b)).toMap
-    AssemblerOutput(code, assembly.toArray, labelMap.toList)
+    }).map{b =>
+      val outputPackager = platform.outputPackagers.getOrElse(b, platform.defaultOutputPackager)
+      val tuple = outputPackager.packageOutputAndLayout(mem, b)
+      if (b == "default") {
+        bankLayoutInFile = tuple._2
+      }
+      b -> tuple._1
+    }.toMap
+    if (options.flag(CompilationFlag.DataMissingInOutputWarning)) {
+      for (bank <- mem.banks.keys.toSeq.sorted) {
+        val missing = mem.banks(bank).initializedNotOutputted
+        if (missing.nonEmpty) {
+          val missingFormatted = MathUtils.collapseConsecutiveInts(missing, i => f"$$$i%04x")
+          log.warn(s"Fragments of segment ${bank} are not contained in any output: $missingFormatted")
+        }
+      }
+    }
+    AssemblerOutput(code, bankLayoutInFile, assembly.toArray, labelMap.toList, endLabelMap.toMap, breakpointSet.toList.sorted)
   }
 
   private def printArrayToAssemblyOutput(assembly: ArrayBuffer[String], name: String, elementType: Type, items: Seq[Expression]): Unit = {
     if (name.startsWith("textliteral$")) {
-      val chars = items.lastOption match {
-        case Some(LiteralExpression(0, _)) => items.init
+      var suffix = ""
+      var chars = items.lastOption match {
+        case Some(LiteralExpression(0, _)) =>
+          suffix = "z"
+          items.init
         case _ => items
+      }
+      chars.headOption match {
+        case Some(LiteralExpression(n, _)) if n + 1 == chars.size  =>
+          // length-prefixed
+          suffix = "p" + suffix
+          chars = chars.tail
+        case _ =>
       }
       val text = chars.map {
         case LiteralExpression(i, _) if i >= 0 && i <= 255 => platform.defaultCodec.decode(i.toInt)
         case _ => TextCodec.NotAChar
       }.mkString("")
-      if (!text.contains(TextCodec.NotAChar) && !text.exists(c => c.isControl)) assembly.append("    ; \"" + text + "\"")
+      if (!text.contains(TextCodec.NotAChar) && !text.exists(c => c.isControl)) assembly.append("    ; \"" + text + "\"" + suffix)
     }
     items.flatMap(expr => env.eval(expr) match {
       case Some(c) => List.tabulate(elementType.size)(i => subbyte(c, i, elementType.size).quickSimplify.toString)
@@ -656,13 +824,13 @@ abstract class AbstractAssembler[T <: AbstractCode](private val program: Program
     }
   }
 
-  def injectLabels(labelMap: Map[String, (Int, Int)], code: List[T]): List[T]
+  def injectLabels(labelMap: Map[String, (String, Int)], code: List[T]): List[T]
 
   private def compileFunction(f: NormalFunction,
                               optimizations: Seq[AssemblyOptimization[T]],
                               options: CompilationOptions,
                               inlinedFunctions: Map[String, List[T]],
-                              labelMap: Map[String, (Int, Int)],
+                              labelMap: Map[String, (String, Int)],
                               niceFunctionProperties: Set[(NiceFunctionProperty, String)]): List[T] = {
     log.debug("Compiling: " + f.name, f.position)
     val unoptimized: List[T] =
@@ -671,9 +839,10 @@ abstract class AbstractAssembler[T <: AbstractCode](private val program: Program
         inlinedFunctions,
         options.jobContext))
     unoptimizedCodeSize += unoptimized.map(_.sizeInBytes).sum
+    // unoptimized.foreach(l => log.trace(l.toString))
     val code = optimizations.foldLeft(quickSimplify(unoptimized)) { (c, opt) =>
-      val code = opt.optimize(f, c, OptimizationContext(options, labelMap, env.maybeGet[ThingInMemory]("__reg"), niceFunctionProperties))
-      if (code eq c) code else quickSimplify(code)
+      val ocode = opt.optimize(f, c, OptimizationContext(options, labelMap, env.maybeGet[ThingInMemory]("__reg"), niceFunctionProperties))
+      if (ocode eq c) ocode else quickSimplify(ocode)
     }
     performFinalOptimizationPass(f, optimizations.nonEmpty, options, code)
   }
@@ -681,6 +850,8 @@ abstract class AbstractAssembler[T <: AbstractCode](private val program: Program
   def quickSimplify(code: List[T]): List[T]
 
   def gatherNiceFunctionProperties(options: CompilationOptions, niceFunctionProperties: mutable.Set[(NiceFunctionProperty, String)], function: NormalFunction, code: List[T]): Unit
+
+  def gatherFunctionOptimizationHints(options: CompilationOptions, niceFunctionProperties: mutable.Set[(NiceFunctionProperty, String)], function: FunctionInMemory): Unit
 
   def performFinalOptimizationPass(f: NormalFunction, actuallyOptimize: Boolean, options: CompilationOptions, code: List[T]): List[T]
 

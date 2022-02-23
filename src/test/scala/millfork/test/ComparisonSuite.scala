@@ -1,16 +1,16 @@
 package millfork.test
 
 import millfork.Cpu
-import millfork.test.emu.{EmuBenchmarkRun, EmuCrossPlatformBenchmarkRun, EmuSuperOptimizedRun, EmuUltraBenchmarkRun, EmuUnoptimizedCrossPlatformRun}
-import org.scalatest.{FunSuite, Matchers}
+import millfork.test.emu.{EmuBenchmarkRun, EmuCrossPlatformBenchmarkRun, EmuSuperOptimizedRun, EmuUltraBenchmarkRun, EmuUnoptimizedCrossPlatformRun, EmuUnoptimizedRun}
+import org.scalatest.{AppendedClues, FunSuite, Matchers}
 
 /**
   * @author Karol Stasiak
   */
-class ComparisonSuite extends FunSuite with Matchers {
+class ComparisonSuite extends FunSuite with Matchers with AppendedClues {
 
   test("Equality and inequality") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | byte output @$c000
         | void main () {
@@ -28,7 +28,7 @@ class ComparisonSuite extends FunSuite with Matchers {
   }
 
   test("Less") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | byte output @$c000
         | void main () {
@@ -41,7 +41,7 @@ class ComparisonSuite extends FunSuite with Matchers {
   }
 
   test("Compare to zero") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | byte output @$c000
         | void main () {
@@ -76,7 +76,7 @@ class ComparisonSuite extends FunSuite with Matchers {
   }
 
   test("Does it even work") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | word output @$c000
         | void main () {
@@ -99,7 +99,9 @@ class ComparisonSuite extends FunSuite with Matchers {
         |  if 2222 == 3333 { output -= 1 }
         | }
       """.stripMargin
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(src)(_.readByte(0xc000) should equal(src.count(_ == '+')))
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(src) { m =>
+      m.readByte(0xc000) should equal(src.count(_ == '+'))
+    }
   }
 
   test("Word comparison == and !=") {
@@ -122,7 +124,9 @@ class ComparisonSuite extends FunSuite with Matchers {
         |  if a != 0 { output += 1 }
         | }
       """.stripMargin
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(src)(_.readByte(0xc000) should equal(src.count(_ == '+')))
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(src){ m =>
+      m.readByte(0xc000) should equal(src.count(_ == '+'))
+    }
   }
 
   test("Word comparison <=") {
@@ -143,7 +147,9 @@ class ComparisonSuite extends FunSuite with Matchers {
         |  if a <= c { output += 1 }
         | }
       """.stripMargin
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(src)(_.readByte(0xc000) should equal(src.count(_ == '+')))
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(src){m => 
+      m.readByte(0xc000) should equal(src.count(_ == '+'))
+    }
   }
   test("Word comparison <") {
     val src =
@@ -162,7 +168,9 @@ class ComparisonSuite extends FunSuite with Matchers {
         |  if a < 257 { output += 1 }
         | }
       """.stripMargin
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(src)(_.readByte(0xc000) should equal(src.count(_ == '+')))
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(src){m => 
+      m.readByte(0xc000) should equal(src.count(_ == '+'))
+    }
   }
 
 
@@ -183,7 +191,9 @@ class ComparisonSuite extends FunSuite with Matchers {
         |  if c > 0 { output += 1 }
         | }
       """.stripMargin
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(src)(_.readByte(0xc000) should equal(src.count(_ == '+')))
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(src){m => 
+      m.readByte(0xc000) should equal(src.count(_ == '+')) }
+    
   }
 
   test("Word comparison >=") {
@@ -206,7 +216,9 @@ class ComparisonSuite extends FunSuite with Matchers {
         |  if a >= 0 { output += 1 }
         | }
       """.stripMargin
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(src)(_.readByte(0xc000) should equal(src.count(_ == '+')))
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(src){m =>
+      m.readByte(0xc000) should equal(src.count(_ == '+'))
+    }
   }
 
   test("Signed comparison >=") {
@@ -229,7 +241,9 @@ class ComparisonSuite extends FunSuite with Matchers {
         |  if a >= 0 { output += 1 }
         | }
       """.stripMargin
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(src)(_.readByte(0xc000) should equal(src.count(_ == '+')))
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(src){m =>
+      m.readByte(0xc000) should equal(src.count(_ == '+'))
+    }
   }
 
   test("Signed comparison with overflow") {
@@ -263,7 +277,9 @@ class ComparisonSuite extends FunSuite with Matchers {
         |  if c > -1 { output += 1 }
         | }
       """.stripMargin
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(src)(_.readByte(0xc000) should equal(src.count(_ == '+')))
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(src){m =>
+      m.readByte(0xc000) should equal(src.count(_ == '+'))
+    }
   }
 
   test("Signed comparison < and <=") {
@@ -295,11 +311,13 @@ class ComparisonSuite extends FunSuite with Matchers {
         |  if c <= -1 { output -= 7 }
         | }
       """.stripMargin
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(src)(_.readByte(0xc000) should equal(src.count(_ == '+')))
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(src){m =>
+      m.readByte(0xc000) should equal(src.count(_ == '+'))
+    }
   }
 
   test("Multiple params for equality") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | byte output @$c000
         | void main () {
@@ -315,7 +333,7 @@ class ComparisonSuite extends FunSuite with Matchers {
   }
 
   test("Multiple params for inequality") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | byte output @$c000
         | void main () {
@@ -331,7 +349,7 @@ class ComparisonSuite extends FunSuite with Matchers {
   }
 
   test("Warnings") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | byte output @$c000
         | void main () {
@@ -373,7 +391,9 @@ class ComparisonSuite extends FunSuite with Matchers {
         |  if c >  335444 { output += 1 }
         | }
       """.stripMargin
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(src)(_.readByte(0xc000) should equal(src.count(_ == '+')))
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(src){m =>
+      m.readByte(0xc000) should equal(src.count(_ == '+'))
+    }
   }
 
   test("Mixed type comparison") {
@@ -391,7 +411,9 @@ class ComparisonSuite extends FunSuite with Matchers {
         |  if x < z { output += 1 }
         | }
       """.stripMargin
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(src)(_.readByte(0xc000) should equal(1))
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(src){m =>
+      m.readByte(0xc000) should equal(1)
+    }
   }
 
   test("Compare beyond 2.2") {
@@ -419,7 +441,7 @@ class ComparisonSuite extends FunSuite with Matchers {
   }
   
   test("Compare to $ffff") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | byte output @$c000
         | void main() {
@@ -439,7 +461,7 @@ class ComparisonSuite extends FunSuite with Matchers {
   }
 
   test("Compare to 0") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | byte output @$c000
         | void main() {
@@ -459,7 +481,7 @@ class ComparisonSuite extends FunSuite with Matchers {
   }
 
   test("Signed compare to 0") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | byte output @$c000
         | void main() {
@@ -477,7 +499,7 @@ class ComparisonSuite extends FunSuite with Matchers {
   }
 
   test("Signed compare to 1") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | byte output @$c000
         | void main() {
@@ -538,7 +560,11 @@ class ComparisonSuite extends FunSuite with Matchers {
         |  }
         |  noinline word id(word x) = x
         |""".stripMargin
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Sixteen, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp)(code) {m => m.readByte(0xc000) should equal (code.count(_ == '↑'))}
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Sixteen, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Motorola6809)(code) {m =>
+      // TODO: for some reason this still fails on 65816
+      // the main suspect is a bug in the emulator
+      m.readByte(0xc000) should equal (code.count(_ == '↑'))
+    }
   }
 
   test("Comparison optimization") {
@@ -576,7 +602,7 @@ class ComparisonSuite extends FunSuite with Matchers {
         |   if ff() >= 10 { output += 1 } // ↑
         | }
         |""".stripMargin
-    EmuUnoptimizedCrossPlatformRun(Cpu.Mos, Cpu.Z80)(code) { m =>
+    EmuUnoptimizedCrossPlatformRun(Cpu.Mos, Cpu.Z80, Cpu.Motorola6809)(code) { m =>
       m.readByte(0xc000) should equal(code.count(_ == '↑'))
     }
   }
@@ -624,8 +650,52 @@ class ComparisonSuite extends FunSuite with Matchers {
         |   
         | }
         |""".stripMargin
-    EmuUnoptimizedCrossPlatformRun(Cpu.Mos, Cpu.Z80)(code) { m =>
+    EmuUnoptimizedCrossPlatformRun(Cpu.Mos, Cpu.Z80, Cpu.Motorola6809)(code) { m =>
       m.readByte(0xc000) should equal(code.count(_ == '↑'))
+    }
+  }
+
+  test("Signed16 comparisons") {
+    for{
+      x <- Seq(-30000, -10000, -1, 0, 1, 10000, 30000)
+      y <- Seq(-30000, -10000, -1, 0, 1, 10000, 30000)
+    } {
+      val code =
+        s"""
+          | byte output @$$c000
+          |
+          | const sbyte convert(bool f) {
+          |   if f { return 1 }
+          |   return -1
+          | }
+          |
+          | noinline void testGE(signed16 x, signed16 y, sbyte f) {
+          |   if x >= y { output += f } else { output -= f }
+          | }
+          |
+          | noinline void testLE(signed16 x, signed16 y, sbyte f) {
+          |   if x <= y { output += f } else { output -= f }
+          | }
+          |
+          | noinline void testL(signed16 x, signed16 y, sbyte f) {
+          |   if x < y { output += f } else { output -= f }
+          | }
+          |
+          | noinline void testG(signed16 x, signed16 y, sbyte f) {
+          |   if x > y { output += f } else { output -= f }
+          | }
+          |
+          | void main() {
+          |    output = 0
+          |    testGE($x, $y, convert(${x >= y}))
+          |    testLE($x, $y, convert(${x <= y}))
+          |    testG($x, $y, convert(${x > y}))
+          |    testL($x, $y, convert(${x < y}))
+          | }
+          |""".stripMargin
+      EmuUnoptimizedCrossPlatformRun(Cpu.Mos, Cpu.Z80, Cpu.Motorola6809)(code) { m =>
+        m.readByte(0xc000) should equal (4) withClue s"[$x <=> $y]"
+      }
     }
   }
 

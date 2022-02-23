@@ -20,10 +20,10 @@ import scala.collection.JavaConverters._
 
 object ShouldNotCompile extends Matchers {
 
-  def apply(source: String): Unit = {
-    checkCase(Cpu.Mos, source)
-    checkCase(Cpu.Z80, source)
-    checkCase(Cpu.Motorola6809, source)
+  def apply(source: String, cpus: Iterable[Cpu.Value] = Set(Cpu.Mos, Cpu.Z80, Cpu.Motorola6809)): Unit = {
+    for (cpu <- cpus) {
+      checkCase(cpu, source)
+    }
   }
 
   private def checkCase(cpu: Cpu.Value, source: String) {
@@ -32,7 +32,11 @@ object ShouldNotCompile extends Matchers {
     val log = TestErrorReporting.log
     println(source)
     val platform = EmuPlatform.get(cpu)
-    val options = CompilationOptions(platform, Map(CompilationFlag.LenientTextEncoding -> true), None, platform.zpRegisterSize, Map(), JobContext(log, new LabelGenerator))
+    val flags = CpuFamily.forType(cpu) match {
+      case CpuFamily.M6809 => Map(CompilationFlag.LenientTextEncoding -> true, CompilationFlag.UseUForStack -> true)
+      case _ => Map(CompilationFlag.LenientTextEncoding -> true)
+    }
+    val options = CompilationOptions(platform, flags, None, platform.zpRegisterSize, Map(), EmuPlatform.textCodecRepository, JobContext(log, new LabelGenerator))
     log.hasErrors = false
     log.verbosity = 999
     var effectiveSource = source
@@ -49,8 +53,8 @@ object ShouldNotCompile extends Matchers {
           else effectiveSource += "\nnoinline asm word call(word de) {\npush de\nret\n}\n"
       }
     }
-    if (source.contains("import zp_reg"))
-      effectiveSource += Files.readAllLines(Paths.get("include/zp_reg.mfk"), StandardCharsets.US_ASCII).asScala.mkString("\n", "\n", "")
+    if (source.contains("import zp_reg") || source.contains("import m6502/zp_reg"))
+      effectiveSource += Files.readAllLines(Paths.get("include/m6502/zp_reg.mfk"), StandardCharsets.US_ASCII).asScala.mkString("\n", "\n", "")
     log.setSource(Some(effectiveSource.linesIterator.toIndexedSeq))
     val PreprocessingResult(preprocessedSource, features, _) = Preprocessor.preprocessForTest(options, effectiveSource)
     val parserF =
@@ -95,19 +99,19 @@ object ShouldNotCompile extends Matchers {
           cpuFamily match {
             case CpuFamily.M6502 =>
               val assembler = new MosAssembler(program, env2, platform)
-              val output = assembler.assemble(callGraph, Nil, options)
+              val output = assembler.assemble(callGraph, Nil, options, (_, _) => Nil)
               output.asm.takeWhile(s => !(s.startsWith(".") && s.contains("= $"))).filterNot(_.contains("; DISCARD_")).foreach(println)
-              fail("Failed: Compilation succeeded for 6502")
+              if (!log.hasErrors) fail("Failed: Compilation succeeded for 6502")
             case CpuFamily.I80 =>
               val assembler = new Z80Assembler(program, env2, platform)
-              val output = assembler.assemble(callGraph, Nil, options)
+              val output = assembler.assemble(callGraph, Nil, options, (_, _) => Nil)
               output.asm.takeWhile(s => !(s.startsWith(".") && s.contains("= $"))).filterNot(_.contains("; DISCARD_")).foreach(println)
-              fail("Failed: Compilation succeeded for Z80")
+              if (!log.hasErrors) fail("Failed: Compilation succeeded for Z80")
             case CpuFamily.M6809 =>
               val assembler = new M6809Assembler(program, env2, platform)
-              val output = assembler.assemble(callGraph, Nil, options)
+              val output = assembler.assemble(callGraph, Nil, options, (_, _) => Nil)
               output.asm.takeWhile(s => !(s.startsWith(".") && s.contains("= $"))).filterNot(_.contains("; DISCARD_")).foreach(println)
-              fail("Failed: Compilation succeeded for 6809")
+              if (!log.hasErrors) fail("Failed: Compilation succeeded for 6809")
             case _ =>
               fail("Failed: Compilation succeeded for unknown CPU")
           }
@@ -117,7 +121,11 @@ object ShouldNotCompile extends Matchers {
       case f: Failure[_, _] =>
         println(f.extra.toString)
         println(f.lastParser.toString)
-        log.error("Syntax error: " + parserF.lastLabel, Some(parserF.lastPosition))
+        if (parserF.lastLabel != "") {
+          options.log.error(s"Syntax error: ${parserF.lastLabel} expected", Some(parserF.lastPosition))
+        } else {
+          options.log.error("Syntax error", Some(parserF.lastPosition))
+        }
         fail("syntax error")
     }
   }

@@ -140,16 +140,19 @@ object Z80StatementCompiler extends AbstractStatementCompiler[ZLine] {
       case s: ReturnDispatchStatement =>
         Z80ReturnDispatch.compile(ctx, s) -> Nil
 
-      case f@ForStatement(_, _, _, _, List(Assignment(target: IndexedExpression, source: IndexedExpression))) =>
+      case f:MemsetStatement =>
+        Z80BulkMemoryOperations.compileMemset(ctx, f) -> Nil
+
+      case f@ForStatement(_, _, _, _, List(Assignment(target: IndexedExpression, source: IndexedExpression)), Nil) =>
         Z80BulkMemoryOperations.compileMemcpy(ctx, target, source, f) -> Nil
 
-      case f@ForStatement(variable, _, _, _, List(Assignment(target: IndexedExpression, source: Expression))) if !source.containsVariable(variable) =>
+      case f@ForStatement(variable, _, _, _, List(Assignment(target: IndexedExpression, source: Expression)), Nil) if ctx.env.overlapsVariable(variable, source) =>
         Z80BulkMemoryOperations.compileMemset(ctx, target, source, f) -> Nil
 
       case f@ForStatement(variable, _, _, _, List(ExpressionStatement(FunctionCallExpression(
       operator@("+=" | "-=" | "|=" | "&=" | "^=" | "+'=" | "-'=" | "<<=" | ">>="),
       List(target: IndexedExpression, source: Expression)
-      )))) =>
+      ))), Nil) =>
         Z80BulkMemoryOperations.compileMemtransform(ctx, target, operator, source, f) -> Nil
 
       case f@ForStatement(variable, _, _, _, List(
@@ -161,7 +164,7 @@ object Z80StatementCompiler extends AbstractStatementCompiler[ZLine] {
       operator2@("+=" | "-=" | "|=" | "&=" | "^=" | "+'=" | "-'=" | "<<=" | ">>="),
       List(target2: IndexedExpression, source2: Expression)
       ))
-      )) =>
+      ), Nil) =>
         Z80BulkMemoryOperations.compileMemtransform2(ctx, target1, operator1, source1, target2, operator2, source2, f) -> Nil
 
       case f@ForStatement(variable, _, _, _, List(
@@ -170,7 +173,7 @@ object Z80StatementCompiler extends AbstractStatementCompiler[ZLine] {
       operator2@("+=" | "-=" | "|=" | "&=" | "^=" | "+'=" | "-'=" | "<<=" | ">>="),
       List(target2: IndexedExpression, source2: Expression)
       ))
-      )) =>
+      ), Nil) =>
         Z80BulkMemoryOperations.compileMemtransform2(ctx, target1, "=", source1, target2, operator2, source2, f) -> Nil
 
       case f@ForStatement(variable, _, _, _, List(
@@ -179,13 +182,13 @@ object Z80StatementCompiler extends AbstractStatementCompiler[ZLine] {
       List(target1: IndexedExpression, source1: Expression)
       )),
       Assignment(target2: IndexedExpression, source2: Expression)
-      )) =>
+      ), Nil) =>
         Z80BulkMemoryOperations.compileMemtransform2(ctx, target1, operator1, source1, target2, "=", source2, f) -> Nil
 
       case f@ForStatement(variable, _, _, _, List(
       Assignment(target1: IndexedExpression, source1: Expression),
       Assignment(target2: IndexedExpression, source2: Expression)
-      )) =>
+      ), Nil) =>
         Z80BulkMemoryOperations.compileMemtransform2(ctx, target1, "=", source1, target2, "=", source2, f) -> Nil
 
       case f: ForStatement =>
@@ -222,16 +225,20 @@ object Z80StatementCompiler extends AbstractStatementCompiler[ZLine] {
           }
         } -> Nil
       case Z80AssemblyStatement(op, reg, offset, expression, elidability) =>
-        val param: Constant = expression match {
-          // TODO: hmmm
-          case VariableExpression(name) =>
-            if (Seq(JP, JR, DJNZ, LABEL).contains(op)) {
-              MemoryAddressConstant(Label(name))
-            } else {
-              env.evalForAsm(expression).orElse(env.maybeGet[ThingInMemory](name).map(_.toAddress)).getOrElse(MemoryAddressConstant(Label(name)))
+        val silent = (Seq(JP, JR, DJNZ, LABEL, CHANGED_MEM).contains(op))
+        val param = ctx.env.evalForAsm(expression, silent = silent) match {
+          case Some(e) => e
+          case None =>
+            expression match {
+              case VariableExpression(name) =>
+                env.maybeGet[ThingInMemory](name).map(_.toAddress).getOrElse {
+                  val fqName = if (name.startsWith(".")) env.prefix + name else name
+                  MemoryAddressConstant(Label(fqName))
+                }
+              case _ =>
+                ctx.log.error("Invalid parameter", statement.position)
+                Constant.Zero
             }
-          case _ =>
-            env.evalForAsm(expression).getOrElse(env.errorConstant(s"`$expression` is not a constant", expression.position))
         }
         val registers = (reg, offset) match {
           case (OneRegister(r), Some(o)) => env.evalForAsm(expression) match {

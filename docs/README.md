@@ -16,6 +16,8 @@
 
 * [Preprocessor](lang/preprocessor.md)
 
+* [Modules](lang/modules.md)
+
 * [Syntax](lang/syntax.md)
 
 * [Types](lang/types.md)
@@ -34,6 +36,8 @@
 
 * [Inline 8080/LR35902/Z80 assembly syntax](lang/assemblyz80.md)
 
+* [Inline 6809 assembly syntax](lang/assembly6809.md)
+
 * [Important guidelines regarding reentrancy](lang/reentrancy.md)
 
 * [List of keywords](lang/keywords.md)
@@ -42,27 +46,47 @@
 
 * [`stdlib` module](stdlib/stdlib.md)
 
-* [`string` module](stdlib/string.md)
+* [`string`, `scrstring` and `pstring` modules](stdlib/string.md)
 
 * [`stdio` module](stdlib/stdio.md)
 
-* [Modules for reading input devices](stdlib/input.md)
+* Reading input devices:
+
+    * [`joy` module](stdlib/joy.md)
+
+    * [`keyboard` module](stdlib/keyboard.md)
+
+    * [`mouse` module](stdlib/mouse.md)
 
 * [`encconv` module](stdlib/encconv.md)
 
-* [Other cross-platform modules (`keyboard`, `err`, `random`)](stdlib/other.md)
+* [Other cross-platform modules (`err`, `random`)](stdlib/other.md)
 
-* [Definitions available on only some platforms](stdlib/frequent.md)
+* Platform-specific modules:
 
-* [C64-only modules](stdlib/c64.md)
+    * [Definitions available on only some platforms](stdlib/frequent.md)
 
-* [`cbm_file` module](stdlib/cbm_file.md)
+    * [C64-only modules](stdlib/c64.md)
+    
+    * [PET-only modules](stdlib/cbm_pet.md)
+    
+    * [`cbm_file` module](stdlib/cbm_file.md)
+    
+    * [NES-only modules](stdlib/nes.md)
+    
+    * [Atari Lynx-only modules](stdlib/lynx.md)
+    
+    * [Game Boy–only modules](stdlib/gb.md)
+    
+    * [X16–only modules](stdlib/x16.md)
+    
+## Guides
 
-* [NES-only modules](stdlib/nes.md)
+* [Differences from C](various/cdiff.md) 
 
-* [Game Boy–only modules](stdlib/gb.md)
+* [Differences from other assemblers](various/asmdiff.md) 
 
-* [X16–only modules](stdlib/x16.md)
+* [Optimization guide](various/optimization.md) 
 
 ## Implementation details
 

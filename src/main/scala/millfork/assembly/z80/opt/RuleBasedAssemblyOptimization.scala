@@ -30,7 +30,7 @@ object FlowInfoRequirement extends Enumeration {
   }
 
   def assertLabels(x: FlowInfoRequirement.Value): Unit = x match {
-    case NoRequirement => FatalErrorReporting.reportFlyingPig("Backward flow info required")
+    case NoRequirement => FatalErrorReporting.reportFlyingPig("Label info required")
     case _ => ()
   }
 }
@@ -43,23 +43,24 @@ class RuleBasedAssemblyOptimization(val name: String, val needsFlowInfo: FlowInf
 
   private val actualRules = rules.flatMap(_.flatten)
   actualRules.foreach(_.pattern.validate(needsFlowInfo))
+  private val actualRulesWithIndex = actualRules.zipWithIndex
 
   override def optimize(f: NormalFunction, code: List[ZLine], optimizationContext: OptimizationContext): List[ZLine] = {
     val taggedCode = FlowAnalyzer.analyze(f, code, optimizationContext, needsFlowInfo)
-    val (changed, optimized) = optimizeImpl(f, taggedCode, optimizationContext)
-    if (changed) optimized else code
+    optimizeImpl(f, code, taggedCode, optimizationContext)
   }
 
-  def optimizeImpl(f: NormalFunction, code: List[(FlowInfo, ZLine)], optimizationContext: OptimizationContext): (Boolean, List[ZLine]) = {
+  final def optimizeImpl(f: NormalFunction, code:List[ZLine], taggedCode: List[(FlowInfo, ZLine)], optimizationContext: OptimizationContext): List[ZLine] = {
     val log = optimizationContext.log
-    code match {
-      case Nil => (false, Nil)
+    taggedCode match {
+      case Nil => code
       case head :: tail =>
-        for ((rule, index) <- actualRules.zipWithIndex) {
+        for ((rule, index) <- actualRulesWithIndex) {
           val ctx = new AssemblyMatchingContext(optimizationContext.options)
-          rule.pattern.matchTo(ctx, code) match {
+          rule.pattern.matchTo(ctx, taggedCode) match {
             case Some(rest: List[(FlowInfo, ZLine)]) =>
-              val matchedChunkToOptimize: List[ZLine] = code.take(code.length - rest.length).map(_._2)
+              val optimizedChunkLengthBefore = taggedCode.length - rest.length
+              val (matchedChunkToOptimize, restOfCode) = code.splitAt(optimizedChunkLengthBefore)
               val optimizedChunk: List[ZLine] = rule.result(matchedChunkToOptimize, ctx)
               val optimizedChunkWithSource =
                 if (!ctx.compilationOptions.flag(CompilationFlag.LineNumbersInAssembly)) optimizedChunk
@@ -68,30 +69,34 @@ class RuleBasedAssemblyOptimization(val name: String, val needsFlowInfo: FlowInf
                 else if (optimizedChunk.size == 1) optimizedChunk.map(_.pos(SourceLine.merge(matchedChunkToOptimize.map(_.source))))
                 else if (matchedChunkToOptimize.flatMap(_.source).toSet.size == 1) optimizedChunk.map(_.pos(SourceLine.merge(matchedChunkToOptimize.map(_.source))))
                 else optimizedChunk
-              log.debug(s"Applied $name ($index)")
-              if (needsFlowInfo != FlowInfoRequirement.NoRequirement) {
-                val before = code.head._1.statusBefore
-                val after = code(matchedChunkToOptimize.length - 1)._1.importanceAfter
-                if (log.traceEnabled) {
+              if (log.debugEnabled) {
+                log.debug(s"Applied $name ($index)")
+              }
+              if (log.traceEnabled) {
+                if (needsFlowInfo != FlowInfoRequirement.NoRequirement) {
+                  val before = head._1.statusBefore
+                  val after = taggedCode(matchedChunkToOptimize.length - 1)._1.importanceAfter
                   log.trace(s"Before: $before")
                   log.trace(s"After:  $after")
                 }
-              }
-              if (log.traceEnabled) {
                 matchedChunkToOptimize.filter(_.isPrintable).foreach(l => log.trace(l.toString))
                 log.trace("     ↓")
                 optimizedChunkWithSource.filter(_.isPrintable).foreach(l => log.trace(l.toString))
               }
               if (needsFlowInfo != FlowInfoRequirement.NoRequirement) {
-                return true -> (optimizedChunkWithSource ++ optimizeImpl(f, rest, optimizationContext)._2)
+                return optimizedChunkWithSource ++ optimizeImpl(f, restOfCode, rest, optimizationContext)
               } else {
-                return true -> optimize(f, optimizedChunkWithSource ++ rest.map(_._2), optimizationContext)
+                return optimize(f, optimizedChunkWithSource ++ restOfCode, optimizationContext)
               }
             case None => ()
           }
         }
-        val (changedTail, optimizedTail) = optimizeImpl(f, tail, optimizationContext)
-        (changedTail, head._2 :: optimizedTail)
+        val optimizedTail = optimizeImpl(f, code.tail, tail, optimizationContext)
+        if (optimizedTail eq code.tail) {
+          code
+        } else {
+          code.head :: optimizedTail
+        }
     }
   }
 }
@@ -163,7 +168,7 @@ class AssemblyMatchingContext(val compilationOptions: CompilationOptions) {
     import millfork.assembly.z80.ZOpcode._
     get[List[ZLine]](i).foreach {
       // JSR and BSR are allowed
-      case ZLine0(RET | RST | RETI | RETN, _, _) =>
+      case ZLine0(RET | RST | RETI | RETN | BYTE, _, _) =>
         return false
       case ZLine0(JP | JR, OneRegister(_), _) =>
         return false
@@ -184,7 +189,7 @@ class AssemblyMatchingContext(val compilationOptions: CompilationOptions) {
     import millfork.assembly.z80.ZOpcode._
     var pushCount = 0
     get[List[ZLine]](i).foreach {
-      case ZLine0(RET | RST | RETI | RETN, _, _) =>
+      case ZLine0(RET | RST | RETI | RETN | BYTE, _, _) =>
         return false
       case ZLine0(PUSH, _, _) =>
         pushCount += 1
@@ -203,7 +208,7 @@ class AssemblyMatchingContext(val compilationOptions: CompilationOptions) {
     import ZRegister.{SP, HL, IMM_16}
     @tailrec
     def impl(list: List[ZLine]): Boolean = list match {
-      case ZLine0(PUSH | POP | CALL | RET | RETI | RETN | EX_SP | EXX | EX_AF_AF | RST | RSTV | HALT | STOP, _, _) :: _ => false
+      case ZLine0(PUSH | POP | CALL | RET | RETI | RETN | EX_SP | EXX | EX_AF_AF | RST | RSTV | HALT | STOP | BYTE, _, _) :: _ => false
       case ZLine0(LD_DESP | LD_HLSP, _, c) :: xs => if (c.isProvablyInRange(2, 127)) impl(xs) else false
       case ZLine0(LD_16, TwoRegisters(HL, IMM_16), c) :: ZLine0(ADD_16, TwoRegisters(HL, SP), _) :: xs => if (c.isProvablyInRange(2, 127)) impl(xs) else false
       case ZLine0(_, TwoRegisters(SP, _), _) :: _ => false
@@ -584,6 +589,15 @@ case class MatchSourceRegisterAndOffset(i: Int) extends AssemblyLinePattern {
   override def hitRate: Double = 0.931
 }
 
+case class HasTargetRegister(i: ZRegister.Value) extends AssemblyLinePattern {
+  override def matchLineTo(ctx: AssemblyMatchingContext, flowInfo: FlowInfo, line: ZLine): Boolean =
+    line.registers match {
+      case TwoRegisters(t, _) => t == i
+      case _ => false
+    }
+
+  override def hitRate: Double = 0.879
+}
 case class MatchTargetRegisterAndOffset(i: Int) extends AssemblyLinePattern {
   override def matchLineTo(ctx: AssemblyMatchingContext, flowInfo: FlowInfo, line: ZLine): Boolean =
     line.registers match {
@@ -706,6 +720,13 @@ case class MatchJumpTarget(i: Int) extends AssemblyLinePattern {
 case object IsUnconditional extends AssemblyLinePattern {
   override def matchLineTo(ctx: AssemblyMatchingContext, flowInfo: FlowInfo, line: ZLine): Boolean =
     line.registers == NoRegisters
+
+  override def hitRate: Double = 0.212
+}
+
+case object IsConditional extends AssemblyLinePattern {
+  override def matchLineTo(ctx: AssemblyMatchingContext, flowInfo: FlowInfo, line: ZLine): Boolean =
+    line.registers.isInstanceOf[IfFlagSet] || line.registers.isInstanceOf[IfFlagClear]
 
   override def hitRate: Double = 0.212
 }
@@ -1226,6 +1247,7 @@ case class HasOpcodeIn(ops: Set[ZOpcode.Value]) extends TrivialAssemblyLinePatte
 case class Has8BitImmediate(i: Int) extends TrivialAssemblyLinePattern {
   override def apply(line: ZLine): Boolean = (line.registers match {
     case TwoRegisters(_, ZRegister.IMM_8) => true
+    case TwoRegistersOffset(_, ZRegister.IMM_8, _) => true
     case OneRegister(ZRegister.IMM_8) => true
     case _ => false
   }) && (line.parameter.quickSimplify match {
@@ -1243,6 +1265,7 @@ case class Match8BitImmediate(i: Int) extends AssemblyLinePattern {
 
   override def matchLineTo(ctx: AssemblyMatchingContext, flowInfo: FlowInfo, line: ZLine): Boolean = line.registers match {
     case TwoRegisters(_, ZRegister.IMM_8) => ctx.addObject(i, line.parameter)
+    case TwoRegistersOffset(_, ZRegister.IMM_8, _) => ctx.addObject(i, line.parameter)
     case OneRegister(ZRegister.IMM_8) => ctx.addObject(i, line.parameter)
     case _ => false
   }
@@ -1254,6 +1277,7 @@ case class HasImmediateWhere(predicate: Int => Boolean) extends TrivialAssemblyL
   override def apply(line: ZLine): Boolean =
     (line.registers match {
       case TwoRegisters(_, ZRegister.IMM_8) => true
+      case TwoRegistersOffset(_, ZRegister.IMM_8, _) => true
       case OneRegister(ZRegister.IMM_8) => true
       case _ => false
     }) && (line.parameter.quickSimplify match {
@@ -1292,6 +1316,16 @@ case class HasCallerCount(count: Int) extends AssemblyLinePattern {
   override def hitRate: Double = 0.056
 }
 
+object ParameterIsLocalLabel extends AssemblyLinePattern {
+  override def matchLineTo(ctx: AssemblyMatchingContext, flowInfo: FlowInfo, line: ZLine): Boolean =
+    line match {
+      case ZLine0(ZOpcode.LABEL, _, MemoryAddressConstant(Label(l))) => l.startsWith(".")
+      case _ => false
+    }
+
+  override def hitRate: Double = 0.056
+}
+
 case class MatchElidableCopyOf(i: Int, firstLinePattern: AssemblyLinePattern, lastLinePattern: AssemblyLinePattern) extends AssemblyPattern {
   override def matchTo(ctx: AssemblyMatchingContext, code: List[(FlowInfo, ZLine)]): Option[List[(FlowInfo, ZLine)]] = {
     val pattern = ctx.get[List[ZLine]](i)
@@ -1323,4 +1357,16 @@ case object IsNotALabelUsedManyTimes extends AssemblyLinePattern {
   }
 
   override def hitRate: Double = 0.999
+}
+
+case object ParameterIsLabel extends AssemblyLinePattern {
+
+  override def validate(needsFlowInfo: FlowInfoRequirement.Value): Unit = FlowInfoRequirement.assertLabels(needsFlowInfo)
+
+  override def matchLineTo(ctx: AssemblyMatchingContext, flowInfo: FlowInfo, line: ZLine): Boolean = line.parameter match {
+      case MemoryAddressConstant(Label(l)) => true
+      case _ => false
+    }
+
+  override def hitRate: Double = 0.09 // ?
 }

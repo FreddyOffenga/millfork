@@ -290,54 +290,6 @@ object LaterOptimizations {
 
   )
 
-  private def incDecThroughIndexRegister(amount: Int, dec: Boolean, carrySet: Boolean, useX: Boolean) = {
-    val ldAddrModes = if (useX) LdxAddrModes else LdyAddrModes
-    val stAddrModes = if (useX) StxAddrModes else StyAddrModes
-    val ldOp = if (useX) LDX else LDY
-    val stOp = if (useX) STX else STY
-    val changeOp = if (dec) if (useX) DEX else DEY else if (useX) INX else INY
-    val addOp = if (dec) SBC else ADC
-    val addParam = if (dec ^ carrySet) amount + 1 else amount
-    val indexState = if (useX) State.X else State.Y
-    val cState = if (carrySet) HasSet(State.C) else HasClear(State.C)
-    val carryOp = if (carrySet) SEC else CLC
-
-    (Elidable & HasOpcode(LDA) & HasAddrModeIn(ldAddrModes) & HasClear(State.D)).capture(11) ~
-      (Elidable & HasOpcode(carryOp)).? ~
-      (Elidable & HasOpcode(addOp) & HasImmediate(addParam) & cState) ~
-      (Elidable & HasOpcode(STA) & HasAddrModeIn(stAddrModes) & DoesntMatterWhatItDoesWith(State.A, State.C, State.V, indexState)).capture(12) ~~> { (_, ctx) =>
-      ctx.get[List[AssemblyLine]](11).head.copy(opcode = ldOp) ::
-        (List.fill(amount)(AssemblyLine.implied(changeOp)) :+
-          ctx.get[List[AssemblyLine]](12).head.copy(opcode = stOp))
-    }
-  }
-
-  val IncrementThroughIndexRegisters = new RuleBasedAssemblyOptimization("Increment through index registers",
-    needsFlowInfo = FlowInfoRequirement.BothFlows,
-    incDecThroughIndexRegister(1, dec = false, carrySet = false, useX = true),
-    incDecThroughIndexRegister(1, dec = false, carrySet = false, useX = false),
-    incDecThroughIndexRegister(1, dec = false, carrySet = true, useX = true),
-    incDecThroughIndexRegister(1, dec = false, carrySet = true, useX = false),
-    incDecThroughIndexRegister(1, dec = true, carrySet = true, useX = true),
-    incDecThroughIndexRegister(1, dec = true, carrySet = true, useX = false),
-    incDecThroughIndexRegister(2, dec = false, carrySet = false, useX = true),
-    incDecThroughIndexRegister(2, dec = false, carrySet = false, useX = false),
-    incDecThroughIndexRegister(2, dec = false, carrySet = true, useX = true),
-    incDecThroughIndexRegister(2, dec = false, carrySet = true, useX = false),
-    incDecThroughIndexRegister(2, dec = true, carrySet = true, useX = true),
-    incDecThroughIndexRegister(2, dec = true, carrySet = true, useX = false),
-
-    (Elidable & HasOpcode(TYA) & HasClear(State.D)) ~
-      (Elidable & HasOpcode(CLC)) ~
-      (Elidable & HasOpcode(ADC) & HasImmediate(1) & DoesntMatterWhatItDoesWith(State.C, State.N, State.Z, State.V)) ~~> { code =>
-      AssemblyLine.implied(INY).pos(code(2).source) :: code.head :: AssemblyLine.implied(DEY).pos(code(2).source) :: code.drop(3)
-    },
-    (Elidable & HasOpcode(TXA) & HasClear(State.D)) ~
-      (Elidable & HasOpcode(CLC)) ~
-      (Elidable & HasOpcode(ADC) & HasImmediate(1) & DoesntMatterWhatItDoesWith(State.C, State.N, State.Z, State.V)) ~~> { code =>
-      AssemblyLine.implied(INX).pos(code(2).source) :: code.head :: AssemblyLine.implied(DEX).pos(code(2).source) :: code.drop(3)
-    },
-  )
 
   val LoadingBranchesOptimization = new RuleBasedAssemblyOptimization("Loading branches optimization",
     needsFlowInfo = FlowInfoRequirement.BackwardFlow,
@@ -451,48 +403,6 @@ object LaterOptimizations {
     },
   )
 
-  val UseIndexedX = new RuleBasedAssemblyOptimization("Using indexed-indirect addressing mode",
-    needsFlowInfo = FlowInfoRequirement.BothFlows,
-
-    (Elidable & HasOpcode(LDY) & HasImmediate(0) & DoesntMatterWhatItDoesWith(State.Z, State.N)) ~
-      (Linear & Not(ConcernsY)).* ~
-      (Elidable & HasAddrMode(IndexedY) & HasX(0) & DoesntMatterWhatItDoesWith(State.Y)) ~~> { code =>
-      code.tail.init :+ code.last.copy(addrMode = IndexedX)
-    },
-
-    (Elidable & HasOpcode(LDY) & HasImmediate(0) & DoesntMatterWhatItDoesWith(State.Z, State.N)) ~
-      (Linear & Not(ConcernsY)).* ~
-      (Elidable & HasOpcodeIn(Set(ISC, DCP, SLO, SRE, RRA, RLA)) & HasAddrMode(IndexedY) & HasX(0xff) & DoesntMatterWhatItDoesWith(State.Y, State.X)) ~~> { code =>
-      code.tail.init ++ List(AssemblyLine.implied(INX), code.last.copy(addrMode = IndexedX))
-    },
-
-    (Elidable & HasOpcode(LDY) & HasImmediate(0) & DoesntMatterWhatItDoesWith(State.Z, State.N)) ~
-      (Linear & Not(ConcernsY)).* ~
-      (Elidable & HasOpcodeIn(Set(ISC, DCP, SLO, SRE, RRA, RLA)) & HasAddrMode(IndexedY) & HasX(1) & DoesntMatterWhatItDoesWith(State.Y, State.X)) ~~> { code =>
-      code.tail.init ++ List(AssemblyLine.implied(DEX), code.last.copy(addrMode = IndexedX))
-    },
-
-    (Elidable & HasOpcode(LDY) & HasImmediate(0) & DoesntMatterWhatItDoesWith(State.Z, State.N)) ~
-      (Linear & Not(ConcernsY)).* ~
-      (Elidable & HasAddrMode(IndexedY) & MatchX(1) & DoesntMatterWhatItDoesWith(State.Y)) ~~> { (code, ctx)=>
-      val lastLine = code.last
-      code.tail.init ++ List(lastLine.copy(addrMode = IndexedX, parameter = lastLine.parameter - ctx.get[Int](1)))
-    },
-
-    (Elidable & HasOpcode(LDY) & HasImmediate(0) & DoesntMatterWhatItDoesWith(State.Z, State.N)) ~
-      (Linear & Not(ConcernsY)).*.capture(2) ~
-      (Elidable & HasAddrMode(IndexedY) & DoesntMatterWhatItDoesWith(State.Y, State.X)).capture(0) ~
-      Linear.*.capture(3) ~
-      (Elidable & HasOpcode(LDX) & MatchImmediate(1) & DoesntMatterWhatItDoesWith(State.Z, State.N)) ~~> { (code, ctx) =>
-      val mainLine = ctx.get[List[AssemblyLine]](0).head
-      ctx.get[List[AssemblyLine]](2) ++ List(
-        code.last,
-        mainLine.copy(addrMode = IndexedX, parameter = mainLine.parameter - ctx.get[Int](1))) ++
-        ctx.get[List[AssemblyLine]](3)
-    },
-
-  )
-
   val UseBit = new RuleBasedAssemblyOptimization("Using BIT instruction",
     needsFlowInfo = FlowInfoRequirement.BackwardFlow,
     (Elidable & HasOpcode(LDA) & HasAddrModeIn(Set(Absolute, ZeroPage))) ~
@@ -554,6 +464,75 @@ object LaterOptimizations {
       (Elidable & HasOpcode(STA) & HasAddrModeIn(Absolute, ZeroPage) & DoesntMatterWhatItDoesWith(State.A)) ~~>{ code =>
       List(code.head, code.last.copy(opcode = STY))
     },
+
+    (Elidable & HasOpcode(CMP) & MatchParameter(0) & MatchAddrMode(1)) ~
+      (Elidable & HasOpcode(BNE)) ~
+      (Elidable & HasOpcode(LDA) & MatchParameter(0) & MatchAddrMode(1) & DoesntMatterWhatItDoesWith(State.N, State.Z)) ~~>{ code =>
+      code.init
+    },
+    (Elidable & HasOpcode(CPX) & MatchParameter(0) & MatchAddrMode(1)) ~
+      (Elidable & HasOpcode(BNE)) ~
+      (Elidable & HasOpcode(LDX) & MatchParameter(0) & MatchAddrMode(1) & DoesntMatterWhatItDoesWith(State.N, State.Z)) ~~>{ code =>
+      code.init
+    },
+    (Elidable & HasOpcode(CPY) & MatchParameter(0) & MatchAddrMode(1)) ~
+      (Elidable & HasOpcode(BNE)) ~
+      (Elidable & HasOpcode(LDY) & MatchParameter(0) & MatchAddrMode(1) & DoesntMatterWhatItDoesWith(State.N, State.Z)) ~~>{ code =>
+      code.init
+    },
+
+    (Elidable & HasOpcode(CMP) & MatchParameter(0) & MatchAddrMode(1)) ~
+      (Elidable & HasOpcode(BNE)) ~
+      (Elidable & HasOpcode(LDX) & MatchParameter(0) & MatchAddrMode(1)) ~~>{ code =>
+      code.init :+ AssemblyLine.implied(TAX).pos(code.last.source)
+    },
+    (Elidable & HasOpcode(CMP) & MatchParameter(0) & MatchAddrMode(1)) ~
+      (Elidable & HasOpcode(BNE) & IsNotALabelUsedManyTimes) ~
+      (Elidable & HasOpcode(LDY) & MatchParameter(0) & MatchAddrMode(1)) ~~>{ code =>
+      code.init :+ AssemblyLine.implied(TAY).pos(code.last.source)
+    },
+    (Elidable & HasOpcode(CPX) & MatchParameter(0) & MatchAddrMode(1)) ~
+      (Elidable & HasOpcode(BNE)) ~
+      (Elidable & HasOpcode(LDA) & MatchParameter(0) & MatchAddrMode(1)) ~~>{ code =>
+      code.init :+ AssemblyLine.implied(TXA).pos(code.last.source)
+    },
+    (Elidable & HasOpcode(CPY) & MatchParameter(0) & MatchAddrMode(1)) ~
+      (Elidable & HasOpcode(BNE)) ~
+      (Elidable & HasOpcode(LDA) & MatchParameter(0) & MatchAddrMode(1)) ~~>{ code =>
+      code.init :+ AssemblyLine.implied(TYA).pos(code.last.source)
+    },
+
+    ((HasOpcode(STA) & HasAddrModeIn(Absolute, LongAbsolute, ZeroPage) & MatchAddrMode(0) & MatchParameter(1)) ~
+      (Linear & DoesntChangeMemoryAt(0, 1) & Not(ChangesA)).*).capture(4) ~
+      (Elidable & HasOpcode(LDA) & DoesntMatterWhatItDoesWith(State.N, State.Z) & MatchAddrMode(2) & MatchParameter(3)).capture(66) ~
+      ((Linear & DoesntChangeMemoryAt(0, 1) & DoesntChangeMemoryAt(2, 3) & DoesntChangeIndexingInAddrMode(2) & Not(ConcernsA)).*).capture(5) ~
+      (Elidable & HasOpcodeIn(ADC, ORA, EOR, AND) & HasAddrModeIn(Absolute, LongAbsolute, ZeroPage) & MatchParameter(1)) ~~> { (code, ctx) =>
+      ctx.get[List[AssemblyLine]](4) ++ ctx.get[List[AssemblyLine]](5) ++ ctx.get[List[AssemblyLine]](66).map(_.copy(opcode = code.last.opcode))
+    },
+
+    (Elidable & HasOpcode(LDA) & HasClear(State.D)) ~
+      (Elidable & HasOpcode(ORA) & HasImmediate(0x7f)) ~
+      (Elidable & HasOpcode(BMI) & MatchParameter(0)) ~
+      (Elidable & HasOpcode(LDA) & HasImmediate(0)) ~
+      (Elidable & IsNotALabelUsedManyTimes & HasOpcode(LABEL) & MatchParameter(0) & DoesntMatterWhatItDoesWith(State.C, State.V)) ~~> { (code, ctx) =>
+      List(AssemblyLine.immediate(LDA, 0x7f), code.head.copy(opcode = CMP), AssemblyLine.immediate(SBC, 0x7f))
+    },
+
+    (Elidable & HasOpcode(LDA) & HasClear(State.D) & HasY(0)) ~
+      (Elidable & HasOpcode(ORA) & HasImmediate(0x7f)) ~
+      (Elidable & HasOpcode(BMI) & MatchParameter(0)) ~
+      (Elidable & HasOpcode(TYA) & HasY(0)) ~
+      (Elidable & IsNotALabelUsedManyTimes & HasOpcode(LABEL) & MatchParameter(0) & DoesntMatterWhatItDoesWith(State.C, State.V)) ~~> { (code, ctx) =>
+      List(AssemblyLine.immediate(LDA, 0x7f), code.head.copy(opcode = CMP), AssemblyLine.immediate(SBC, 0x7f))
+    },
+
+    (Elidable & HasOpcode(LDA) & HasClear(State.D) & HasX(0)) ~
+      (Elidable & HasOpcode(ORA) & HasImmediate(0x7f)) ~
+      (Elidable & HasOpcode(BMI) & MatchParameter(0)) ~
+      (Elidable & HasOpcode(TXA) & HasX(0)) ~
+      (Elidable & IsNotALabelUsedManyTimes & HasOpcode(LABEL) & MatchParameter(0) & DoesntMatterWhatItDoesWith(State.C, State.V)) ~~> { (code, ctx) =>
+      List(AssemblyLine.immediate(LDA, 0x7f), code.head.copy(opcode = CMP), AssemblyLine.immediate(SBC, 0x7f))
+    },
   )
 
   val DontUseIndexRegisters = new RuleBasedAssemblyOptimization("Don't use index registers unnecessarily",
@@ -597,7 +576,50 @@ object LaterOptimizations {
 
   )
 
+  val CommutativeInPlaceModifications = new RuleBasedAssemblyOptimization("Commutative in-place modifications",
+    needsFlowInfo = FlowInfoRequirement.NoRequirement,
+
+    (Elidable & HasOpcode(LDY) & HasAddrModeIn(Immediate, Absolute, ZeroPage, LongAbsolute, AbsoluteX, ZeroPageX) & MatchAddrMode(0) & MatchParameter(1)) ~
+      (Elidable & HasOpcode(LDA) & HasAddrModeIn(AbsoluteY, IndexedY, LongIndexedY)) ~
+      (Elidable & HasOpcode(LDY) & HasAddrModeIn(Immediate, Absolute, ZeroPage, LongAbsolute, AbsoluteX, ZeroPageX)) ~
+      (Elidable & HasOpcodeIn(ORA, EOR, AND) & HasAddrModeIn(AbsoluteY, IndexedY, LongIndexedY)) ~
+      (Elidable & HasOpcode(LDY) & HasAddrModeIn(Immediate, Absolute, ZeroPage, LongAbsolute, AbsoluteX, ZeroPageX) & MatchAddrMode(0) & MatchParameter(1)) ~
+      (HasOpcodeIn(INY, DEY)).* ~
+      (HasOpcode(STA) & HasAddrModeIn(AbsoluteY, IndexedY, LongIndexedY)) ~~> { code =>
+      List(code(2), code(3).copy(opcode = LDA), code(5), code(1).copy(opcode = code(3).opcode)) ++ code.drop(5)
+    },
+
+  )
+
+  val BranchlessSignExtension = new RuleBasedAssemblyOptimization("Branchless sign extension",
+    needsFlowInfo = FlowInfoRequirement.BothFlows,
+    (NotFixed & HasOpcode(LDA) & HasAddrModeIn(Absolute, ZeroPage, AbsoluteX, IndexedX, IndexedY, AbsoluteY, ZeroPageX) & HasClear(State.D)) ~
+      (Elidable & HasOpcode(ORA) & HasImmediate(0x7F)) ~
+      (Elidable & HasOpcode(BMI) & MatchParameter(10)) ~
+      (Elidable & HasOpcode(LDA) & HasImmediate(0)) ~
+      (Elidable & HasOpcode(LABEL) & IsNotALabelUsedManyTimes & MatchParameter(10) & DoesntMatterWhatItDoesWith(State.V)) ~~> { code =>
+      List(AssemblyLine.immediate(LDA, 0x7F), code.head.copy(opcode = CMP), AssemblyLine.immediate(SBC, 0x7F))
+    },
+
+    (NotFixed & HasOpcode(LDA) & HasAddrModeIn(Absolute, ZeroPage, AbsoluteX, IndexedX, IndexedY, AbsoluteY, ZeroPageX) & HasClear(State.D)) ~
+      (Elidable & HasOpcode(AND) & HasImmediate(0x80)) ~
+      (Elidable & HasOpcode(BPL) & MatchParameter(10)) ~
+      (Elidable & HasOpcode(LDA) & HasImmediate(0xff)) ~
+      (Elidable & HasOpcode(LABEL) & IsNotALabelUsedManyTimes & MatchParameter(10) & DoesntMatterWhatItDoesWith(State.V)) ~~> { code =>
+      List(AssemblyLine.immediate(LDA, 0x7F), code.head.copy(opcode = CMP), AssemblyLine.immediate(SBC, 0x7F))
+    },
+
+  )
+
+//  AssemblyLine.immediate(ORA, 0x7F),
+//  AssemblyLine.relative(BMI, label),
+//  AssemblyLine.immediate(LDA, 0),
+//  AssemblyLine.label(label))
+
+  // use the lists in OptimizationPresets to actually add these to the normal pipeline
   val All = List(
+    BranchlessSignExtension,
+    CommutativeInPlaceModifications,
     DontUseIndexRegisters,
     DoubleLoadToDifferentRegisters,
     DoubleLoadToTheSameRegister,
@@ -611,10 +633,5 @@ object LaterOptimizations {
     UseXInsteadOfStack,
     UseYInsteadOfStack,
     UseZeropageAddressingMode)
-
-  val Nmos = List(
-    IncrementThroughIndexRegisters,
-    UseIndexedX
-  )
 }
 

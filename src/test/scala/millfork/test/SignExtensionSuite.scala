@@ -14,11 +14,11 @@ class SignExtensionSuite extends FunSuite with Matchers {
         | word output @$c000
         | void main () {
         |   sbyte b
-        |   b = -1
+        |   b = -2
         |   output = b
         | }
       """.stripMargin){m =>
-      m.readWord(0xc000) should equal(0xffff)
+      m.readWord(0xc000) should equal(0xfffe)
     }
   }
   test("Sbyte to Word 2") {
@@ -28,12 +28,27 @@ class SignExtensionSuite extends FunSuite with Matchers {
         |   output = b()
         | }
         | sbyte b() {
-        |   return -1
+        |   return -2
         | }
-      """.stripMargin){m => m.readWord(0xc000) should equal(0xffff)}
+      """.stripMargin){m => m.readWord(0xc000) should equal(0xfffe)}
   }
+
+  test("Sbyte to Word 3") {
+    EmuUnoptimizedCrossPlatformRun(Cpu.Mos, Cpu.Z80, Cpu.Motorola6809)("""
+        | import zp_reg
+        | word output @$c000
+        | void main () {
+        |   sbyte x,y
+        |   x = b(1)
+        |   y = b(31)
+        |   output = word(x) * word(y)
+        | }
+        | noinline sbyte b(sbyte x) = x
+      """.stripMargin){m => m.readWord(0xc000) should equal(31)}
+  }
+
   test("Sbyte to Long") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)("""
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)("""
         | long output @$c000
         | void main () {
         |   output = 421
@@ -46,7 +61,7 @@ class SignExtensionSuite extends FunSuite with Matchers {
   }
 
   test("Optimize pointless sign extension") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)("""
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)("""
         | array output [10] @$c000
         | word w
         | void main () {
@@ -66,7 +81,7 @@ class SignExtensionSuite extends FunSuite with Matchers {
         |   return 5
         | }
       """.stripMargin){m =>
-      m.readWord(0xc000) should equal(440)
+      m.readWord(0xc001, 0xc000) should equal(440)
     }
   }
 
@@ -75,12 +90,12 @@ class SignExtensionSuite extends FunSuite with Matchers {
         | word output @$c000
         | void main () {
         |   sbyte b
-        |   b = -1
+        |   b = -2
         |   memory_barrier()
         |   output = byte(b)
         | }
       """.stripMargin){m =>
-      m.readWord(0xc000) should equal(0x00ff)
+      m.readWord(0xc000) should equal(0x00fe)
     }
   }
 
@@ -89,12 +104,12 @@ class SignExtensionSuite extends FunSuite with Matchers {
         | word output @$c000
         | void main () {
         |   sbyte b
-        |   b = -1
+        |   b = -2
         |   memory_barrier()
         |   output = word(byte(b))
         | }
       """.stripMargin){m =>
-      m.readWord(0xc000) should equal(0x00ff)
+      m.readWord(0xc000) should equal(0x00fe)
     }
   }
 
@@ -102,16 +117,16 @@ class SignExtensionSuite extends FunSuite with Matchers {
     EmuUnoptimizedCrossPlatformRun(Cpu.Mos, Cpu.Z80, Cpu.Motorola6809)("""
         | word output @$c000
         | void main () {
-        |   output = f($ff)
+        |   output = f($f4)
         | }
         | noinline word f(byte x) = sbyte(x)
       """.stripMargin){m =>
-      m.readWord(0xc000) should equal(0xffff)
+      m.readWord(0xc000) should equal(0xfff4)
     }
   }
 
   test("Check multilayered conversions of signed and unsigned types") {
-    EmuUnoptimizedCrossPlatformRun(Cpu.Mos, Cpu.Z80)(
+    EmuUnoptimizedCrossPlatformRun(Cpu.Mos, Cpu.Z80, Cpu.Motorola6809)(
       """
         |long output @$c000
         |noinline sbyte f() = $FE
@@ -121,6 +136,142 @@ class SignExtensionSuite extends FunSuite with Matchers {
         |}
         |""".stripMargin) { m =>
       m.readLong(0xc000) should equal(0xfffe)
+    }
+  }
+
+  test("The silliest thing") {
+    EmuUnoptimizedCrossPlatformRun(Cpu.Mos, Cpu.Z80, Cpu.Motorola6809)(
+      """
+        |word output @$c000
+        |word output2 @$c002
+        |void main() {
+        |  output = -3
+        |  output2 = -30000
+        |}
+        |""".stripMargin) { m =>
+      m.readWord(0xc000) should equal(0xfffd)
+      m.readWord(0xc002).toShort.toInt should equal(-30000)
+    }
+  }
+
+  test("Signed16 to int32 extension") {
+    EmuUnoptimizedCrossPlatformRun(Cpu.Mos, Cpu.Z80, Cpu.Motorola6809)(
+      """
+        |int32 output @$c000
+        |
+        |void main() {
+        |  static volatile signed16 tmp
+        |  tmp = -3
+        |  memory_barrier()
+        |  output = tmp
+        |}
+        |""".stripMargin){ m =>
+      m.readLong(0xc000) should equal(-3)
+    }
+  }
+
+  test("Signed16 to int32 extension 2") {
+    EmuUnoptimizedCrossPlatformRun(Cpu.Mos, Cpu.Z80, Cpu.Motorola6809)(
+      """
+        |int32 output @$c000
+        |
+        |void main() {
+        |  static volatile signed16 tmp
+        |  tmp = -3
+        |  output = 0
+        |  memory_barrier()
+        |  output += tmp
+        |}
+        |""".stripMargin){ m =>
+      m.readLong(0xc000) should equal(-3)
+    }
+  }
+
+  test("Trivial implicit sbyte to word extension") {
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Motorola6809)(
+      """
+        |word output @$c000
+        |
+        |sbyte c
+        |
+        |noinline word f() {
+        |  return c
+        |}
+        |
+        |void main() {
+        |  c = -2
+        |  output = f()
+        |}
+        |""".stripMargin){ m =>
+      m.readWord(0xc000) should equal(0xFFFE)
+    }
+  }
+
+  test("Derefs and sign extension") {
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Motorola6809)(
+      """
+        |pointer.word op
+        |pointer.sbyte ip
+        |array(sbyte) input[1]
+        |array(word) output [4] @$c000
+        |word output2 @$c010
+        |
+        |noinline byte id(byte x) = x
+        |
+        |noinline void init() {
+        |   input[0] = -2
+        |   ip = input[0].pointer
+        |   op = output[0].pointer
+        |}
+        |
+        |void main() {
+        |  sbyte sb
+        |  sb = -2
+        |  init()
+        |  op[id(0)] = sb
+        |  output[id(1)] = sb
+        |  op[id(2)] = ip[id(0)]
+        |  output[id(3)] = ip[id(0)]
+        |  output2 = ip[id(0)]
+        |}
+        |""".stripMargin){ m =>
+      m.readWord(0xc000) should equal(0xfffe)
+      m.readWord(0xc002) should equal(0xfffe)
+      m.readWord(0xc004) should equal(0xfffe)
+      m.readWord(0xc006) should equal(0xfffe)
+      m.readWord(0xc010) should equal(0xfffe)
+    }
+  }
+
+  test("Derefs and sign extension 2") {
+    EmuUnoptimizedCrossPlatformRun(Cpu.Mos, Cpu.Z80, Cpu.Motorola6809)(
+      """
+        |pointer.long op
+        |pointer.sbyte ip
+        |array(sbyte) input[1]
+        |array(long) output [4] @$c000
+        |long output2 @$c010
+        |
+        |noinline byte id(byte x) = x
+        |
+        |noinline void init() {
+        |   input[0] = -2
+        |   ip = input[0].pointer
+        |   op = output[0].pointer
+        |}
+        |
+        |void main() {
+        |  sbyte sb
+        |  sb = -2
+        |  init()
+        |  op[id(0)] = sb
+        |  output[id(1)] = sb
+        |  output2 = ip[id(0)]
+        |}
+        |""".stripMargin){ m =>
+      m.readLong(0xc000) should equal(-2)
+      m.readLong(0xc004) should equal(-2)
+      m.readLong(0xc010) should equal(-2)
     }
   }
 

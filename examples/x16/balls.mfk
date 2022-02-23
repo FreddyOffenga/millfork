@@ -35,7 +35,7 @@ void main () {
     vera_upload_large($10000, sprite_bitmap.addr, sizeof(sprite_bitmap))
     vera_upload_large(VERA_SPRITES, sprites.addr, sizeof(sprites))
     // enable sprites:
-    vera_poke(VERA_SPRITE_CTRL, 1)
+    vera_set_sprites_enable(true)
     while true {
         for i,0,paralleluntil,SPRITE_COUNT {
             p = sprites[i].pointer

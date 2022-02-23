@@ -4,7 +4,7 @@ import millfork.CompilationFlag
 import millfork.assembly.{BranchingOpcodeMapping, Elidability}
 import millfork.assembly.mos.AddrMode._
 import millfork.assembly.mos.Opcode._
-import millfork.assembly.mos._
+import millfork.assembly.mos.{Opcode, _}
 import millfork.compiler._
 import millfork.env._
 import millfork.error.ConsoleLogger
@@ -34,6 +34,7 @@ object MosStatementCompiler extends AbstractStatementCompiler[AssemblyLine] {
 
   override def replaceLabel(ctx: CompilationContext, line: AssemblyLine, from: String, to: String): AssemblyLine = line.parameter match {
     case MemoryAddressConstant(Label(l)) if l == from => line.copy(parameter = MemoryAddressConstant(Label(to)))
+    case StructureConstant(s, List(z, MemoryAddressConstant(Label(l)))) if l == from => line.copy(parameter = StructureConstant(s, List(z, MemoryAddressConstant(Label(to)))))
     case _ => line
   }
 
@@ -51,18 +52,18 @@ object MosStatementCompiler extends AbstractStatementCompiler[AssemblyLine] {
       (if (ctx.options.flag(CompilationFlag.SoftwareStack)) {
         List(
           AssemblyLine.implied(PLA),
-          AssemblyLine.absolute(STA, ctx.env.get[ThingInMemory]("__sp")))
+          AssemblyLine.absolute(STA, ctx.env.get[ThingInMemory]("__sp")).copy(elidability = Elidability.Volatile))
       } else Nil) ++ (if (zpRegisterSize > 0) {
         val reg = env.get[VariableInMemory]("__reg")
         (zpRegisterSize.-(1) to 0 by (-1)).flatMap { i =>
           List(
             AssemblyLine.implied(PLA),
-            AssemblyLine.zeropage(STA, reg,i))
+            AssemblyLine.zeropage(STA, reg,i).copy(elidability = Elidability.Volatile))
         }.toList
       } else Nil)
-    val someRegisterA = Some(b, RegisterVariable(MosRegister.A, b))
-    val someRegisterAX = Some(w, RegisterVariable(MosRegister.AX, w))
-    val someRegisterYA = Some(w, RegisterVariable(MosRegister.YA, w))
+//    val someRegisterA = Some(b, RegisterVariable(MosRegister.A, b))
+//    val someRegisterAX = Some(w, RegisterVariable(MosRegister.AX, w))
+//    val someRegisterYA = Some(w, RegisterVariable(MosRegister.YA, w))
     lazy val returnInstructions = if (m.interrupt) {
       if (ctx.options.flag(CompilationFlag.EmitNative65816Opcodes)) {
         if (zpRegisterSize > 0) {
@@ -70,7 +71,7 @@ object MosStatementCompiler extends AbstractStatementCompiler[AssemblyLine] {
           val lastByte = if (zpRegisterSize % 2 != 0) {
             List(
               AssemblyLine.implied(PLA),
-              AssemblyLine.zeropage(STA, reg, zpRegisterSize - 1),
+              AssemblyLine.zeropage(STA, reg, zpRegisterSize - 1).copy(elidability = Elidability.Volatile),
               AssemblyLine.immediate(REP, 0x30))
           } else {
             List(AssemblyLine.immediate(REP, 0x30))
@@ -78,7 +79,7 @@ object MosStatementCompiler extends AbstractStatementCompiler[AssemblyLine] {
           val remainingBytes = (zpRegisterSize.&(0xfe).-(2) to 0 by (-2)).flatMap { i =>
             List(
               AssemblyLine.implied(PLA_W),
-              AssemblyLine.zeropage(STA_W, reg, i))
+              AssemblyLine.zeropage(STA_W, reg, i).copy(elidability = Elidability.Volatile))
           }
           lastByte ++ remainingBytes ++
             List(
@@ -123,9 +124,9 @@ object MosStatementCompiler extends AbstractStatementCompiler[AssemblyLine] {
       } else {
         plReg ++ List(
           AssemblyLine.implied(PLA),
-          AssemblyLine.implied(TAY),
+          AssemblyLine.implied(TAY).copy(elidability = Elidability.Fixed),
           AssemblyLine.implied(PLA),
-          AssemblyLine.implied(TAX),
+          AssemblyLine.implied(TAX).copy(elidability = Elidability.Fixed),
           AssemblyLine.implied(PLA),
           AssemblyLine.implied(RTI))
       }
@@ -136,7 +137,7 @@ object MosStatementCompiler extends AbstractStatementCompiler[AssemblyLine] {
           val lastByte = if (zpRegisterSize % 2 != 0) {
             List(
               AssemblyLine.implied(PLA),
-              AssemblyLine.zeropage(STA, reg, zpRegisterSize - 1),
+              AssemblyLine.zeropage(STA, reg, zpRegisterSize - 1).copy(elidability = Elidability.Volatile),
               AssemblyLine.accu16)
           } else {
             List(AssemblyLine.accu16)
@@ -144,7 +145,7 @@ object MosStatementCompiler extends AbstractStatementCompiler[AssemblyLine] {
           val remainingBytes = (zpRegisterSize.&(0xfe).-(2) to 0 by (-2)).flatMap { i =>
             List(
               AssemblyLine.implied(PLA_W),
-              AssemblyLine.zeropage(STA_W, reg, i),
+              AssemblyLine.zeropage(STA_W, reg, i).copy(elidability = Elidability.Volatile),
               AssemblyLine.accu8)
           }
           lastByte ++ remainingBytes
@@ -160,22 +161,17 @@ object MosStatementCompiler extends AbstractStatementCompiler[AssemblyLine] {
         stmts.foreach(s => compile(ctx, s))
         Nil -> Nil
       case MosAssemblyStatement(o, a, x, e) =>
-        val c: Constant = x match {
-          // TODO: hmmm
-          case VariableExpression(name) =>
-            if (OpcodeClasses.ShortBranching(o) || o == JMP || o == LABEL) {
-              MemoryAddressConstant(Label(name))
-            } else {
-              env.evalForAsm(x).getOrElse(env.get[ThingInMemory](name, x.position).toAddress)
-            }
-          case _ =>
-            env.evalForAsm(x).getOrElse(env.errorConstant(s"`$x` is not a constant", x.position))
-        }
+        val c: Constant = compileParameterForAssemblyStatement(env, o, x)
         val actualAddrMode = a match {
           case Absolute if OpcodeClasses.ShortBranching(o) => Relative
+          case Absolute if (o == ROL_W || o == ASL_W) && ctx.options.flag(CompilationFlag.Emit65CE02Opcodes) =>
+              Absolute
           case Absolute if OpcodeClasses.SupportsZeropage(o) && c.fitsProvablyIntoByte => ZeroPage
-          case IndexedX if o == JMP => AbsoluteIndexedX
-          case Indirect if o != JMP => IndexedZ
+          case ImmediateWithAbsolute if (c match {
+            case StructureConstant(_, List(a, b)) => b.fitsProvablyIntoByte
+          }) => ImmediateWithZeroPage
+          case IndexedX if o == JMP || o == JSR => AbsoluteIndexedX
+          case Indirect if o != JMP && o != JSR => IndexedZ
           case _ => a
         }
         List(AssemblyLine(o, actualAddrMode, c, e)) -> Nil
@@ -195,7 +191,7 @@ object MosStatementCompiler extends AbstractStatementCompiler[AssemblyLine] {
           case Some(_) =>
             params.flatMap(p => MosExpressionCompiler.compile(ctx, p, None, NoBranching))-> Nil
           case None =>
-            env.lookupFunction(name, params.map(p => MosExpressionCompiler.getExpressionType(ctx, p) -> p)) match {
+            env.lookupFunction(name, params.map(p => AbstractExpressionCompiler.getExpressionTypeForMacro(ctx, p) -> p)) match {
               case Some(i: MacroFunction) =>
                 val (paramPreparation, inlinedStatements) = MosMacroExpander.inlineFunction(ctx, i, params, e.position)
                 paramPreparation ++  compile(ctx.withInlinedEnv(i.environment, ctx.nextLabel("en")), inlinedStatements)._1 -> Nil
@@ -206,7 +202,9 @@ object MosStatementCompiler extends AbstractStatementCompiler[AssemblyLine] {
       case ExpressionStatement(e) =>
         e match {
           case VariableExpression(_) | LiteralExpression(_, _) | _:GeneratedConstantExpression =>
-            ctx.log.warn("Pointless expression statement", statement.position)
+            if (ctx.options.flag(CompilationFlag.UselessCodeWarning)) {
+              ctx.log.warn("Pointless expression statement", statement.position)
+            }
           case _ =>
         }
         MosExpressionCompiler.compile(ctx, e, None, NoBranching) -> Nil
@@ -221,19 +219,19 @@ object MosStatementCompiler extends AbstractStatementCompiler[AssemblyLine] {
               stackPointerFixBeforeReturn(ctx) ++
                 List(AssemblyLine.discardAF(), AssemblyLine.discardXF(), AssemblyLine.discardYF()) ++ returnInstructions
             case 1 =>
-              if (statement.position.isDefined){
+              if (statement.position.isDefined && ctx.options.flag(CompilationFlag.BuggyCodeWarning)){
                 ctx.log.warn("Returning without a value", statement.position)
               }
               stackPointerFixBeforeReturn(ctx) ++
                 List(AssemblyLine.discardXF(), AssemblyLine.discardYF()) ++ returnInstructions
             case 2 =>
-              if (statement.position.isDefined){
+              if (statement.position.isDefined && ctx.options.flag(CompilationFlag.BuggyCodeWarning)){
                 ctx.log.warn("Returning without a value", statement.position)
               }
               stackPointerFixBeforeReturn(ctx) ++
                 List(AssemblyLine.discardYF()) ++ returnInstructions
             case _ =>
-              if (statement.position.isDefined){
+              if (statement.position.isDefined && ctx.options.flag(CompilationFlag.BuggyCodeWarning)){
                 ctx.log.warn("Returning without a value", statement.position)
               }
               stackPointerFixBeforeReturn(ctx) ++
@@ -243,6 +241,7 @@ object MosStatementCompiler extends AbstractStatementCompiler[AssemblyLine] {
       case s : ReturnDispatchStatement =>
         MosReturnDispatch.compile(ctx, s) -> Nil
       case ReturnStatement(Some(e)) =>
+        val exprType = AbstractExpressionCompiler.getExpressionType(ctx, e)
         (m.returnType match {
           case _: BooleanType =>
             m.returnType.size match {
@@ -250,9 +249,9 @@ object MosStatementCompiler extends AbstractStatementCompiler[AssemblyLine] {
                 ctx.log.error("Cannot return anything from a void function", statement.position)
                 stackPointerFixBeforeReturn(ctx) ++ returnInstructions
               case 1 =>
-                MosExpressionCompiler.compile(ctx, e, someRegisterA, NoBranching) ++ stackPointerFixBeforeReturn(ctx, preserveA = true) ++ returnInstructions
+                MosExpressionCompiler.compile(ctx, e, Some(exprType, RegisterVariable(MosRegister.A, b)), NoBranching) ++ stackPointerFixBeforeReturn(ctx, preserveA = true) ++ returnInstructions
               case 2 =>
-                MosExpressionCompiler.compile(ctx, e, someRegisterAX, NoBranching) ++ stackPointerFixBeforeReturn(ctx, preserveA = true, preserveX = true) ++ returnInstructions
+                MosExpressionCompiler.compile(ctx, e, Some(exprType, RegisterVariable(MosRegister.AX, w)), NoBranching) ++ stackPointerFixBeforeReturn(ctx, preserveA = true, preserveX = true) ++ returnInstructions
               case _ =>
                 // TODO: is this case ever used?
                 MosExpressionCompiler.compileAssignment(ctx, e, VariableExpression(ctx.function.name + "`return")) ++
@@ -269,14 +268,14 @@ object MosStatementCompiler extends AbstractStatementCompiler[AssemblyLine] {
                 ctx.log.error("Cannot return anything from a void function", statement.position)
                 stackPointerFixBeforeReturn(ctx) ++ List(AssemblyLine.discardAF(), AssemblyLine.discardXF(), AssemblyLine.discardYF()) ++ returnInstructions
               case 1 =>
-                MosExpressionCompiler.compile(ctx, e, someRegisterA, NoBranching) ++ stackPointerFixBeforeReturn(ctx, preserveA = true) ++ List(AssemblyLine.discardXF(), AssemblyLine.discardYF()) ++ returnInstructions
+                MosExpressionCompiler.compile(ctx, e, Some(exprType, RegisterVariable(MosRegister.A, w)), NoBranching) ++ stackPointerFixBeforeReturn(ctx, preserveA = true) ++ List(AssemblyLine.discardXF(), AssemblyLine.discardYF()) ++ returnInstructions
               case 2 =>
                 // TODO: ???
                 val stackPointerFix = stackPointerFixBeforeReturn(ctx, preserveA = true, preserveY = true)
                 if (stackPointerFix.isEmpty) {
-                  MosExpressionCompiler.compile(ctx, e, someRegisterAX, NoBranching) ++ List(AssemblyLine.discardYF()) ++ returnInstructions
+                  MosExpressionCompiler.compile(ctx, e, Some(exprType, RegisterVariable(MosRegister.AX, w)), NoBranching) ++ List(AssemblyLine.discardYF()) ++ returnInstructions
                 } else {
-                  MosExpressionCompiler.compile(ctx, e, someRegisterYA, NoBranching) ++
+                  MosExpressionCompiler.compile(ctx, e, Some(exprType, RegisterVariable(MosRegister.YA, w)), NoBranching) ++
                     stackPointerFix ++
                     List(AssemblyLine.implied(TAX), AssemblyLine.implied(TYA), AssemblyLine.discardYF()) ++
                     returnInstructions
@@ -304,18 +303,25 @@ object MosStatementCompiler extends AbstractStatementCompiler[AssemblyLine] {
         compileWhileStatement(ctx, s)
       case s: DoWhileStatement =>
         compileDoWhileStatement(ctx, s)
-      case f@ForStatement(variable, _, _, _, List(Assignment(target: IndexedExpression, source: Expression))) if !source.containsVariable(variable) =>
+      case f:MemsetStatement =>
+        MosBulkMemoryOperations.compileMemset(ctx, f) -> Nil
+      case f@ForStatement(variable, _, _, _, List(Assignment(target: IndexedExpression, source: Expression)), Nil) if !ctx.env.overlapsVariable(variable, source) =>
         MosBulkMemoryOperations.compileMemset(ctx, target, source, f) -> Nil
       case f@ForStatement(variable, start, end, _, List(ExpressionStatement(
-        FunctionCallExpression(operator@("+=" | "-=" | "+'=" | "-'=" | "|=" | "^=" | "&="), List(target: VariableExpression, source))
-      ))) if !target.containsVariable(variable) && !source.containsVariable(variable) && !start.containsVariable(target.name) && !end.containsVariable(target.name) =>
+      FunctionCallExpression(operator@("+=" | "-=" | "+'=" | "-'=" | "|=" | "^=" | "&="), List(target: VariableExpression, source))
+      )), Nil) if !ctx.env.overlapsVariable(variable, source) &&
+        !ctx.env.overlapsVariable(variable, target) &&
+        !ctx.env.overlapsVariable(target.name, start) &&
+        !ctx.env.overlapsVariable(target.name, end) =>
         MosBulkMemoryOperations.compileFold(ctx, target, operator, source, f) match {
           case Some(x) => x -> Nil
           case None => compileForStatement(ctx, f)
         }
       case f@ForStatement(variable, start, end, _, List(ExpressionStatement(
-        FunctionCallExpression(operator@("+=" | "-=" | "<<=" | ">>="), List(target: IndexedExpression, source))
-      ))) if !source.containsVariable(variable) && !start.containsVariable(target.name) && !end.containsVariable(target.name) && target.name != variable =>
+      FunctionCallExpression(operator@("+=" | "-=" | "<<=" | ">>="), List(target: IndexedExpression, source))
+      )), Nil) if !ctx.env.overlapsVariable(variable, source) &&
+        !ctx.env.overlapsVariable(target.name, start) &&
+        !ctx.env.overlapsVariable(target.name, end) && target.name != variable =>
         MosBulkMemoryOperations.compileMemmodify(ctx, target, operator, source, f) match {
           case Some(x) => x -> Nil
           case None => compileForStatement(ctx, f)
@@ -330,6 +336,32 @@ object MosStatementCompiler extends AbstractStatementCompiler[AssemblyLine] {
         compileContinueStatement(ctx, s) -> Nil
     }
     code._1.map(_.positionIfEmpty(statement.position)) -> code._2.map(_.positionIfEmpty(statement.position))
+  }
+
+  private def compileParameterForAssemblyStatement(env: Environment, o: Opcode.Value, x: Expression): Constant = {
+    x match {
+      // TODO: hmmm
+      case VariableExpression(name) =>
+        val silent = OpcodeClasses.ShortBranching(o) || o == JMP || o == LABEL || o == CHANGED_MEM || OpcodeClasses.HudsonTransfer(o)
+        env.evalForAsm(x, silent = silent).orElse(env.maybeGet[ThingInMemory](name).map(_.toAddress)).getOrElse{
+          val fqName = if (name.startsWith(".")) env.prefix + name else name
+          MemoryAddressConstant(Label(fqName))
+        }
+      case FunctionCallExpression("byte_and_pointer$", List(z, b@VariableExpression(name))) =>
+        StructureConstant(env.get[StructType]("byte_and_pointer$"), List(
+          compileParameterForAssemblyStatement(env, NOP, z),
+          env.evalForAsm(b).getOrElse(MemoryAddressConstant(Label(name)))
+        ))
+      case FunctionCallExpression("byte_and_pointer$", List(a, b)) =>
+        StructureConstant(env.get[StructType]("byte_and_pointer$"), List(
+          compileParameterForAssemblyStatement(env, NOP, a),
+          compileParameterForAssemblyStatement(env, NOP, b)
+        ))
+      case FunctionCallExpression("hudson_transfer$", params) =>
+        StructureConstant(env.get[StructType]("hudson_transfer$"), params.map(y => compileParameterForAssemblyStatement(env, o, y)))
+      case _ =>
+        env.evalForAsm(x).getOrElse(env.errorConstant(s"`$x` is not a constant", Some(x), x.position))
+    }
   }
 
   private def stackPointerFixBeforeReturn(ctx: CompilationContext, preserveA: Boolean = false, preserveX: Boolean = false, preserveY: Boolean = false): List[AssemblyLine] = {

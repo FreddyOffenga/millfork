@@ -6,8 +6,26 @@
 
 // CHROUT. Write byte to default output. (If not screen, must call OPEN and CHKOUT beforehands.)
 // Input: A = Byte to write.
-asm void putchar(byte a) @$FFD2 extern
+asm void putchar(byte register(a) char) !preserves_a !preserves_x !preserves_y @$FFD2 extern
 
 inline void new_line() {
     putchar(13)
+}
+
+inline asm set_zero is_pet2000() {
+    ? LDA #$CA
+    CMP $FFFB
+    ? RTS
+}
+
+inline asm set_zero is_pet3000() {
+    ? LDA #$FC
+    CMP $FFFB
+    ? RTS
+}
+
+inline asm set_zero is_pet4000() {
+    ? LDA #$FD
+    CMP $FFFB
+    ? RTS
 }

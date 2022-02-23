@@ -48,8 +48,12 @@ Available for:
 ZX Spectrum,
 NEC PC-88,
 MSX,
-Commodore 64 with `c64_basic` module (requires KERNAL and BASIC),
-Commodore 16 or Plus/4 with `c264_basic` module (requires KERNAL and BASIC).
+Apple II,
+Robotron Z1013 (always trims trailing spaces),
+TRS-80,
+VIC-20 (except for `vic20_a000`),
+Commodore 64 with `c64_basic` module (requires KERNAL and BASIC; empty input is treated like a single space),
+Commodore 16 or Plus/4 with `c264_basic` module (requires KERNAL and BASIC; empty input is treated like a single space).
 
 #### `word readword()`
 
@@ -59,6 +63,10 @@ Available for:
 ZX Spectrum,
 NEC PC-88,
 MSX,
+Apple II,
+Robotron Z1013,
+TRS-80,
+VIC-20 (except for `vic20_a000`),
 Commodore 64 with `c64_basic` module (requires KERNAL and BASIC),
 Commodore 16 or Plus/4 with `c264_basic` module (requires KERNAL and BASIC).
 
@@ -87,11 +95,6 @@ Various colour constants.
 
 Available for: VIC-20, C64, C128, C264 series, ZX Spectrum.
 
-#### `macro void memory_barrier()`
-
-Informs the optimizer that at this point arbitrary memory has been accessed and either read or written by an external device.
-The optimizer should not optimize any memory accesses across that macro.
-
-Available for: all targets.
+ 
 
 

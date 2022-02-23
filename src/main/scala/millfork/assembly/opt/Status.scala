@@ -1,6 +1,7 @@
 package millfork.assembly.opt
 
 import millfork.assembly.mos.opt.SourceOfNZ
+import millfork.env.{Constant, NumericConstant}
 
 /**
   * @author Karol Stasiak
@@ -78,6 +79,16 @@ object Status {
   val SingleZero: Status[Int] = SingleStatus(0)
   val SingleFF: Status[Int] = SingleStatus(0xff)
 
+  def fromByte(c: Constant): Status[Int] = c.loByte match {
+    case NumericConstant(n, _) => SingleStatus(n.toInt & 0xff)
+    case _ => AnyStatus
+  }
+
+  def fromWord(c: Constant): Status[Int] = c match {
+    case NumericConstant(n, _) => SingleStatus(n.toInt & 0xffff)
+    case _ => AnyStatus
+  }
+
   @inline
   private def wrapBool(b: Boolean): Status[Boolean] = if (b) SingleTrue else SingleFalse
 
@@ -107,6 +118,13 @@ object Status {
     def negate: Status[Boolean] = inner match {
       case SingleStatus(x) => wrapBool(!x)
       case x => x
+    }
+  }
+
+  implicit class ConstantStatusOps(val inner: Status[Constant]) extends AnyVal {
+    def toHiLo: (Status[Int], Status[Int]) = inner match {
+      case SingleStatus(NumericConstant(n, _)) => SingleStatus(n.toInt.>>(8).&(0xff)) -> SingleStatus(n.toInt.&(0xff))
+      case _ => AnyStatus -> AnyStatus
     }
   }
   implicit class SourceOfNZStatusOps(val inner: Status[SourceOfNZ]) extends AnyVal {
@@ -229,6 +247,19 @@ object Status {
           case SingleStatus(false) => SingleStatus((x - value - 1) & 0xff) -> SingleStatus((x.&(0xff) - value.&(0xff) - 1) >= 0)
           case _ => AnyStatus -> (if (value == 0) SingleTrue else AnyStatus)
         }
+        case _ => AnyStatus -> AnyStatus
+      }
+      case _ => AnyStatus -> AnyStatus
+    }
+
+    def sbb(value: Status[Int], carry: Status[Boolean]): (Status[Int], Status[Boolean]) = (inner, value) match {
+      case (SingleStatus(x), SingleStatus(v)) => carry match {
+        case SingleStatus(false) => SingleStatus((x - v) & 0xff) -> SingleStatus((x.&(0xff) - v.&(0xff)) < 0)
+        case SingleStatus(true) => SingleStatus((x - v - 1) & 0xff) -> SingleStatus((x.&(0xff) - v.&(0xff) - 1) < 0)
+        case _ => AnyStatus -> (if (v == 0) SingleFalse else AnyStatus)
+      }
+      case (_, SingleStatus(0)) => carry match {
+        case SingleStatus(false) => inner -> SingleFalse
         case _ => AnyStatus -> AnyStatus
       }
       case _ => AnyStatus -> AnyStatus

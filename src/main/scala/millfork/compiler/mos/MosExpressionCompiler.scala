@@ -1,14 +1,12 @@
 package millfork.compiler.mos
 
-import millfork.{CompilationFlag, env}
+import millfork.CompilationFlag
 import millfork.assembly.Elidability
 import millfork.assembly.mos.AddrMode._
 import millfork.assembly.mos.Opcode._
 import millfork.assembly.mos._
-import millfork.assembly.z80.ZLine
 import millfork.compiler._
 import millfork.env._
-import millfork.error.ConsoleLogger
 import millfork.node.{MosRegister, _}
 import millfork.output.NoAlignment
 /**
@@ -16,7 +14,8 @@ import millfork.output.NoAlignment
   */
 object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
 
-  def compileConstant(ctx: CompilationContext, expr: Constant, exprType: Type, target: Variable): List[AssemblyLine] = {
+  def compileConstant(ctx: CompilationContext, expr0: Constant, exprType: Type, target: Variable): List[AssemblyLine] = {
+    val expr = expr0.fitInto(exprType, target.typ)
     target match {
       case RegisterVariable(MosRegister.A, _) => List(AssemblyLine(LDA, Immediate, expr))
       case RegisterVariable(MosRegister.AW, _) =>
@@ -105,6 +104,25 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
     } else code
   }
 
+  def preserve2ZpregIfNeededDestroyingAAndX(ctx: CompilationContext, Offset1: Int, Offset2: Int, code: List[AssemblyLine]): List[AssemblyLine] = {
+    if (changesZpreg(code, Offset1) || changesZpreg(code, Offset2)) {
+      val reg = ctx.env.get[VariableInMemory]("__reg")
+      List(
+        AssemblyLine.zeropage(LDA, reg, Offset1),
+        AssemblyLine.implied(PHA),
+        AssemblyLine.zeropage(LDA, reg, Offset2),
+        AssemblyLine.implied(PHA)) ++
+      code ++
+        List(
+          AssemblyLine.implied(TAX),
+          AssemblyLine.implied(PLA),
+          AssemblyLine.zeropage(STA, reg, Offset2),
+          AssemblyLine.implied(PLA),
+          AssemblyLine.zeropage(STA, reg, Offset1),
+          AssemblyLine.implied(TXA))
+    } else code
+  }
+
   def changesZpreg(code: List[AssemblyLine], Offset: Int): Boolean = {
     code.exists {
       case AssemblyLine0(op,
@@ -137,6 +155,12 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
     }
 
     val cmos = ctx.options.flag(CompilationFlag.EmitCmosOpcodes)
+    if (register == MosRegister.AX && !code.exists(_.concernsX)) {
+      return preserveRegisterIfNeeded(ctx, MosRegister.A, code)
+    }
+    if (register == MosRegister.AY && !code.exists(_.concernsY)) {
+      return preserveRegisterIfNeeded(ctx, MosRegister.A, code)
+    }
     if (states.exists(state => AssemblyLine.treatment(code, state) != Treatment.Unchanged)) {
       register match {
         case MosRegister.A => AssemblyLine.implied(PHA) +: fixTsx(code) :+ AssemblyLine.implied(PLA)
@@ -200,19 +224,19 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
           AssemblyLine.zeropage(STA, reg, 1),
           AssemblyLine.immediate(LDA, p.value.loByte),
           AssemblyLine.zeropage(STA, reg))
-      case VariablePointy(addr, _, _, true) =>
+      case VariablePointy(addr, _, _, true, v) =>
         List(
           AssemblyLine.implied(CLC),
-          AssemblyLine.zeropage(ADC, addr + 1),
+          AssemblyLine.zeropage(ADC, addr + 1).applyVolatile(v),
           AssemblyLine.zeropage(STA, reg, 1),
-          AssemblyLine.zeropage(LDA, addr),
+          AssemblyLine.zeropage(LDA, addr).applyVolatile(v),
           AssemblyLine.zeropage(STA, reg))
-      case VariablePointy(addr, _, _, false) =>
+      case VariablePointy(addr, _, _, false, v) =>
         List(
           AssemblyLine.implied(CLC),
-          AssemblyLine.absolute(ADC, addr + 1),
+          AssemblyLine.absolute(ADC, addr + 1).applyVolatile(v),
           AssemblyLine.zeropage(STA, reg, 1),
-          AssemblyLine.absolute(LDA, addr),
+          AssemblyLine.absolute(LDA, addr).applyVolatile(v),
           AssemblyLine.zeropage(STA, reg))
       case StackVariablePointy(offset, _, _) =>
         if (ctx.options.flag(CompilationFlag.EmitEmulation65816Opcodes)) {
@@ -346,25 +370,25 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
             }
             storeToArrayAtUnknownIndex(v, p.value)
           //TODO: should there be a type check or a zeropage check?
-          case (pointerVariable@VariablePointy(varAddr, _, _, true), None, _, 0 | 1) =>
+          case (pointerVariable@VariablePointy(varAddr, _, _, true, volatile), None, _, 0 | 1) =>
             register match {
               case MosRegister.A =>
-                List(AssemblyLine.immediate(LDY, constIndex), AssemblyLine.indexedY(STA, pointerVariable.addr))
+                List(AssemblyLine.immediate(LDY, constIndex), AssemblyLine.indexedY(STA, pointerVariable.addr).applyVolatile(volatile))
               case MosRegister.Y =>
-                List(AssemblyLine.implied(TYA), AssemblyLine.immediate(LDY, constIndex), AssemblyLine.indexedY(STA, pointerVariable.addr), AssemblyLine.implied(TAY))
+                List(AssemblyLine.implied(TYA), AssemblyLine.immediate(LDY, constIndex), AssemblyLine.indexedY(STA, pointerVariable.addr).applyVolatile(volatile), AssemblyLine.implied(TAY))
               case MosRegister.X =>
-                List(AssemblyLine.immediate(LDY, constIndex), AssemblyLine.implied(TXA), AssemblyLine.indexedY(STA, pointerVariable.addr))
+                List(AssemblyLine.immediate(LDY, constIndex), AssemblyLine.implied(TXA), AssemblyLine.indexedY(STA, pointerVariable.addr).applyVolatile(volatile))
               case _ =>
                 ctx.log.error("Cannot store a word in an array", target.position)
                 Nil
             }
-          case (p@VariablePointy(varAddr, _, _, true), Some(_), _, 0 | 1) =>
+          case (p@VariablePointy(varAddr, _, _, true, volatile), Some(_), _, 0 | 1) =>
             val calculatingIndex = compile(ctx, indexExpr, Some(b, RegisterVariable(MosRegister.Y, b)), NoBranching)
             register match {
               case MosRegister.A =>
-                preserveRegisterIfNeeded(ctx, MosRegister.A, calculatingIndex) :+ AssemblyLine.indexedY(STA, varAddr)
+                preserveRegisterIfNeeded(ctx, MosRegister.A, calculatingIndex) :+ AssemblyLine.indexedY(STA, varAddr).applyVolatile(volatile)
               case MosRegister.X =>
-                preserveRegisterIfNeeded(ctx, MosRegister.X, calculatingIndex) ++ List(AssemblyLine.implied(TXA), AssemblyLine.indexedY(STA, varAddr))
+                preserveRegisterIfNeeded(ctx, MosRegister.X, calculatingIndex) ++ List(AssemblyLine.implied(TXA), AssemblyLine.indexedY(STA, varAddr).applyVolatile(volatile))
               case MosRegister.Y =>
                 AssemblyLine.implied(TYA) :: preserveRegisterIfNeeded(ctx, MosRegister.A, calculatingIndex) ++ List(
                   AssemblyLine.indexedY(STA, varAddr), AssemblyLine.implied(TAY)
@@ -407,21 +431,22 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
             ctx.log.error("Invalid index for writing", indexExpr.position)
             Nil
         }
-      case DerefExpression(inner, offset, targetType) =>
+      case DerefExpression(inner, offset, isVolatile, targetType) =>
+        val el = if(isVolatile) Elidability.Volatile else Elidability.Elidable
         val (prepare, addr, am, fast) = getPhysicalPointerForDeref(ctx, inner)
         if (targetType.size == 1) {
           fast match {
-            case Some((fastBase, fastIndex)) =>
-              return preserveRegisterIfNeeded(ctx, MosRegister.A, fastIndex(offset)) ++ List(AssemblyLine.absoluteY(STA, fastBase))
+            case Some((fastBase, fastAddrMode, fastIndex)) =>
+              return preserveRegisterIfNeeded(ctx, MosRegister.A, fastIndex(offset)) ++ List(AssemblyLine(STA, fastAddrMode, fastBase, elidability = el))
             case _ =>
           }
         }
-        val lo = preserveRegisterIfNeeded(ctx, MosRegister.A, prepare) ++ List(AssemblyLine.immediate(LDY, offset), AssemblyLine(STA, am, addr))
+        val lo = preserveRegisterIfNeeded(ctx, MosRegister.A, prepare) ++ List(AssemblyLine.immediate(LDY, offset), AssemblyLine(STA, am, addr, elidability = el))
         if (targetType.size == 1) {
           lo
         } else {
           lo ++ List(AssemblyLine.immediate(LDA, 0)) ++
-                List.tabulate(targetType.size - 1)(i => List(AssemblyLine.implied(INY), AssemblyLine(STA, am, addr))).flatten
+                List.tabulate(targetType.size - 1)(i => List(AssemblyLine.implied(INY), AssemblyLine(STA, am, addr, elidability = el))).flatten
         }
     }
   }
@@ -451,7 +476,20 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
         compileToA(ctx, expr)
       case t: ConstantBooleanType =>
         List(AssemblyLine.immediate(LDA, if (t.value) 1 else 0))
-      case _: FlagBooleanType | BuiltInBooleanType =>
+      case t: FlagBooleanType =>
+        val condition = compile(ctx, expr, None, NoBranching)
+        condition ++ (t.jumpIfFalse.mosOpcode match {
+          case BCC => List(AssemblyLine.immediate(LDA, 0), AssemblyLine.implied(ROL))
+          case BCS => List(AssemblyLine.immediate(LDA, 0), AssemblyLine.implied(ROL), AssemblyLine.immediate(EOR, 1))
+          case o =>
+            val label = env.nextLabel("bo")
+            List(
+              AssemblyLine.immediate(LDA, 0),
+              AssemblyLine.relative(o, label),
+              AssemblyLine.immediate(LDA, 1),
+              AssemblyLine.label(label))
+        })
+      case BuiltInBooleanType =>
         val label = env.nextLabel("bo")
         val condition = compile(ctx, expr, None, BranchIfFalse(label))
         if (condition.isEmpty) {
@@ -512,6 +550,12 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
     compile(ctx, expr, Some(b -> RegisterVariable(MosRegister.A, b)), BranchSpec.None)
   }
 
+  def compileToY(ctx: CompilationContext, expr: Expression): List[AssemblyLine] = {
+    val env = ctx.env
+    val b = env.get[Type]("byte")
+    compile(ctx, expr, Some(b -> RegisterVariable(MosRegister.Y, b)), BranchSpec.None)
+  }
+
   def compileToAX(ctx: CompilationContext, expr: Expression): List[AssemblyLine] = {
     val env = ctx.env
     val w = env.get[Type]("word")
@@ -530,16 +574,16 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
     compile(ctx, expr, Some(p -> env.get[Variable]("__reg.b2b3")), BranchSpec.None)
   }
 
-  def getPhysicalPointerForDeref(ctx: CompilationContext, pointerExpression: Expression): (List[AssemblyLine], Constant, AddrMode.Value, Option[(Constant, Int => List[AssemblyLine])]) = {
+  def getPhysicalPointerForDeref(ctx: CompilationContext, pointerExpression: Expression): (List[AssemblyLine], Constant, AddrMode.Value, Option[(Constant, AddrMode.Value, Int => List[AssemblyLine])]) = {
     pointerExpression match {
       case VariableExpression(name) =>
-        val p = ctx.env.get[ThingInMemory](name)
+        val p = ctx.env.maybeGet[ThingInMemory](name)
         p match {
-          case array: MfArray => return (Nil, p.toAddress, AddrMode.AbsoluteY,
-            if (array.sizeInBytes <= 256) Some(p.toAddress, (i: Int) => List(AssemblyLine.immediate(LDY, i))) else None)
+          case Some(array: MfArray) => return (Nil, array.toAddress, AddrMode.AbsoluteY,
+            if (array.sizeInBytes <= 256) Some((array.toAddress, AbsoluteY, (i: Int) => List(AssemblyLine.immediate(LDY, i)))) else None)
+          case Some(q) => if (q.zeropage) return (Nil, q.toAddress, AddrMode.IndexedY, None)
           case _ =>
         }
-        if (p.zeropage) return (Nil, p.toAddress, AddrMode.IndexedY, None)
       case _ =>
     }
     ctx.env.eval(pointerExpression) match {
@@ -551,17 +595,39 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
                 Some(base -> index)
               case _ => None
             }
-        (compileToZReg(ctx, pointerExpression), ctx.env.get[ThingInMemory]("__reg.loword").toAddress, AddrMode.IndexedY, baseAndIndex match {
+        val zreg = ctx.env.get[ThingInMemory]("__reg.loword").toAddress
+        (compileToZReg(ctx, pointerExpression), zreg, AddrMode.IndexedY, baseAndIndex match {
           case Some((base, index)) =>
             val itype = AbstractExpressionCompiler.getExpressionType(ctx, index)
             if (itype.size != 1 || itype.isSigned) {
               None
             } else {
-              ctx.env.eval(base).map { baseConst =>
-                baseConst -> { (i: Int) =>
-                  val b = ctx.env.get[Type]("byte")
-                  compile(ctx, index #+# i, Some(b -> RegisterVariable(MosRegister.Y, b)), BranchSpec.None)
-                }
+              ctx.env.eval(base) match {
+                case Some(baseConst) =>
+                  Some((baseConst, AbsoluteY, { (i: Int) =>
+                    val b = ctx.env.get[Type]("byte")
+                    compileToY(ctx, index #+# i)
+                  }))
+                case _ =>
+                  if (compileToY(ctx, index #+# 42).exists(l => OpcodeClasses.ChangesMemoryAlways(l.opcode) || OpcodeClasses.ChangesMemoryIfNotImplied(l.opcode))) {
+                    None
+                  } else {
+                    val initZreg = compileToZReg(ctx, base)
+                    initZreg match {
+                      case List(
+                      AssemblyLine0(LDA, ZeroPage, l),
+                      AssemblyLine0(STA, ZeroPage, _),
+                      AssemblyLine0(LDA, ZeroPage, h),
+                      AssemblyLine0(STA, ZeroPage, _)) if h == l+1 =>
+                        Some((zreg, IndexedY, { (i: Int) =>
+                          compileToZReg(ctx, base) ++ compileToY(ctx, index #+# i)
+                        }))
+                      case initZreg =>
+                        Some((zreg, IndexedY, { (i: Int) =>
+                          initZreg ++ compileToY(ctx, index #+# i)
+                        }))
+                    }
+                  }
               }
             }
           case _ => None
@@ -630,7 +696,7 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
     }
   }
 
-  def compile(ctx: CompilationContext, expr: Expression, exprTypeAndVariable: Option[(Type, Variable)], branches: BranchSpec): List[AssemblyLine] = {
+  def compile(ctx: CompilationContext, expr: Expression, exprTypeAndVariable: Option[(Type, Variable)], branches: BranchSpec): List[AssemblyLine] = try {
     val env = ctx.env
     val b = env.get[Type]("byte")
     val exprType = AbstractExpressionCompiler.getExpressionType(ctx, expr)
@@ -703,7 +769,14 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
                           AssemblyLine.implied(PLA))
                       } else AssemblyLine.variable(ctx, LDA, source) :+ AssemblyLine.immediate(LDX, 0)
                       case 2 =>
-                        AssemblyLine.variable(ctx, LDA, source) ++ AssemblyLine.variable(ctx, LDX, source, 1)
+                        val lo = AssemblyLine.variable(ctx, LDA, source)
+                        if (lo.exists(_.concernsX)) {
+                          lo ++ AssemblyLine.variable(ctx, LDX, source, 1, preserveA = true)
+                        } else {
+                          val hi = AssemblyLine.variable(ctx, LDX, source, 1)
+                          if (hi.length == 1 && hi.head.opcode == LDX) lo ++ hi
+                          else hi ++ lo
+                        }
                     }
                   case RegisterVariable(MosRegister.AY, _) =>
                     exprType.size match {
@@ -758,7 +831,7 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
                     if (exprType.size > target.typ.size) {
                       ctx.log.error(s"Variable `$target.name` is too small", expr.position)
                       Nil
-                    } else if (exprType.size == 2 && target.typ.size == 2 && ctx.options.flag(CompilationFlag.EmitNative65816Opcodes)) {
+                    } else if (exprType.size == 2 && AbstractExpressionCompiler.getExpressionType(ctx, expr).size == 2 && target.typ.size == 2 && ctx.options.flag(CompilationFlag.EmitNative65816Opcodes)) {
                       AssemblyLine.accu16 :: (AssemblyLine.variable(ctx, LDA_W, source) ++ AssemblyLine.variable(ctx, STA_W, target) :+ AssemblyLine.accu8)
                     } else {
                       val copyFromLo  = List.tabulate(exprType.size)(i => AssemblyLine.variable(ctx, LDA, source, i) ++ AssemblyLine.variable(ctx, STA, target, i))
@@ -943,7 +1016,7 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
       case IndexedExpression(arrayName, indexExpr) =>
         val pointy = env.getPointy(arrayName)
         AbstractExpressionCompiler.checkIndexType(ctx, pointy, indexExpr)
-        if (pointy.elementType.size != 1) ctx.log.fatal("Whee!") // the statement preprocessor should have removed all of those
+        if (pointy.elementType.alignedSize != 1) ctx.log.fatal("Whee!") // the statement preprocessor should have removed all of those
         // TODO: check
         val (variableIndex, constantIndex) = env.evalVariableAndConstantSubParts(indexExpr)
         val variableIndexSize = variableIndex.map(v => getExpressionType(ctx, v).size).getOrElse(0)
@@ -970,7 +1043,7 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
               if (target.typ.size == 1) {
                 AssemblyLine.variable(ctx, STA, target)
               }
-              else if (target.typ.isSigned) {
+              else if (pointy.elementType.isSigned) {
                 AssemblyLine.variable(ctx, STA, target) ++ signExtendA(ctx) ++
                   List.tabulate(target.typ.size - 1)(i => AssemblyLine.variable(ctx, STA, target, i + 1)).flatten
               } else {
@@ -1060,48 +1133,78 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
               Nil
           }
           register match {
-            case MosRegister.A | MosRegister.X | MosRegister.Y => result ++ suffix
-            case MosRegister.AX | MosRegister.YX => result :+ AssemblyLine.immediate(LDX, 0) // TODO: signedness?
-            case MosRegister.AY | MosRegister.XY => result :+ AssemblyLine.immediate(LDY, 0)
-            case MosRegister.AW => result ++ List(AssemblyLine.implied(XBA), AssemblyLine.immediate(LDA, 0), AssemblyLine.implied(XBA))
+            case MosRegister.A | MosRegister.X | MosRegister.Y =>
+              result ++ suffix
+            case MosRegister.AX | MosRegister.YX if !pointy.elementType.isSigned =>
+              result :+ AssemblyLine.immediate(LDX, 0)
+            case MosRegister.AY | MosRegister.XY if !pointy.elementType.isSigned =>
+              result :+ AssemblyLine.immediate(LDY, 0)
+            case MosRegister.XA | MosRegister.YA if !pointy.elementType.isSigned =>
+              result :+ AssemblyLine.immediate(LDA, 0)
+            case MosRegister.AX =>
+              result ++ List(AssemblyLine.implied(PHA)) ++ signExtendA(ctx) ++ List(AssemblyLine.implied(TAX), AssemblyLine.implied(PLA))
+            case MosRegister.AY =>
+              result ++ List(AssemblyLine.implied(PHA)) ++ signExtendA(ctx) ++ List(AssemblyLine.implied(TAY), AssemblyLine.implied(PLA))
+            case MosRegister.XY =>
+              result ++ List(AssemblyLine.implied(TAX)) ++ signExtendA(ctx) ++ List(AssemblyLine.implied(TAY))
+            case MosRegister.YX =>
+              result ++ List(AssemblyLine.implied(TAY)) ++ signExtendA(ctx) ++ List(AssemblyLine.implied(TAX))
+            case MosRegister.XA =>
+              result ++ List(AssemblyLine.implied(TAX)) ++ signExtendA(ctx)
+            case MosRegister.YA =>
+              result ++ List(AssemblyLine.implied(TAY)) ++ signExtendA(ctx)
+            case MosRegister.AW if !pointy.elementType.isSigned =>
+              result ++ List(AssemblyLine.implied(XBA), AssemblyLine.immediate(LDA, 0), AssemblyLine.implied(XBA))
+            case MosRegister.AW =>
+              result ++ List(AssemblyLine.implied(PHA), AssemblyLine.implied(XBA), AssemblyLine.implied(PLA)) ++ signExtendA(ctx) ++ List(AssemblyLine.implied(XBA))
           }
         }
-      case DerefExpression(inner, offset, targetType) =>
+      case DerefExpression(inner, offset, isVolatile, targetType) =>
+        val el = if(isVolatile) Elidability.Volatile else Elidability.Elidable
         val (prepare, addr, am, fast) = getPhysicalPointerForDeref(ctx, inner)
         (fast, targetType.size, am) match {
-          case (Some((fastBase, fastIndex)), 1, _) =>
-            fastIndex(offset) ++ List(AssemblyLine.absoluteY(LDA, fastBase)) ++ expressionStorageFromA(ctx, exprTypeAndVariable, expr.position, exprType.isSigned)
+          case (Some((fastBase, fastAddrMode, fastIndex)), 1, _) =>
+            fastIndex(offset) ++ List(AssemblyLine(LDA, fastAddrMode, fastBase, elidability = el)) ++ expressionStorageFromA(ctx, exprTypeAndVariable, expr.position, exprType.isSigned)
           case (_, 1, AbsoluteY) =>
-            prepare ++ List(AssemblyLine.absolute(LDA, addr + offset)) ++ expressionStorageFromA(ctx, exprTypeAndVariable, expr.position, exprType.isSigned)
+            prepare ++ List(AssemblyLine.absolute(LDA, addr + offset).copy(elidability = el)) ++ expressionStorageFromA(ctx, exprTypeAndVariable, expr.position, exprType.isSigned)
           case (_, 1, _) =>
-            prepare ++ List(AssemblyLine.immediate(LDY, offset), AssemblyLine(LDA, am, addr)) ++ expressionStorageFromA(ctx, exprTypeAndVariable, expr.position, exprType.isSigned)
-          case (Some((fastBase, fastIndex)), 2, _) =>
+            prepare ++ List(AssemblyLine.immediate(LDY, offset), AssemblyLine(LDA, am, addr, elidability = el)) ++ expressionStorageFromA(ctx, exprTypeAndVariable, expr.position, exprType.isSigned)
+          case (Some((fastBase, AbsoluteY, fastIndex)), 2, _) =>
             fastIndex(offset) ++ List(
-              AssemblyLine.absoluteY(LDA, fastBase),
+              AssemblyLine.absoluteY(LDA, fastBase).copy(elidability = el),
               AssemblyLine.implied(INY),
-              AssemblyLine.absoluteY(LDX, fastBase)) ++
+              AssemblyLine.absoluteY(LDX, fastBase).copy(elidability = el)) ++
+              expressionStorageFromAX(ctx, exprTypeAndVariable, expr.position)
+          case (Some((fastBase, fastAddrMode, fastIndex)), 2, _) =>
+            fastIndex(offset) ++ List(
+              AssemblyLine.implied(INY),
+              AssemblyLine(LDA, fastAddrMode, fastBase).copy(elidability = el),
+              AssemblyLine.implied(TAX),
+              AssemblyLine.implied(DEY),
+              AssemblyLine(LDA, fastAddrMode, fastBase).copy(elidability = el)) ++
               expressionStorageFromAX(ctx, exprTypeAndVariable, expr.position)
           case (_, 2, AbsoluteY) =>
             prepare ++
               List(
-                AssemblyLine.absolute(LDA, addr + offset),
-                AssemblyLine.absolute(LDX, addr + offset + 1)) ++
+                AssemblyLine.absolute(LDA, addr + offset).copy(elidability = el),
+                AssemblyLine.absolute(LDX, addr + offset + 1).copy(elidability = el)) ++
               expressionStorageFromAX(ctx, exprTypeAndVariable, expr.position)
           case (_, 2, _) =>
             prepare ++
               List(
                 AssemblyLine.immediate(LDY, offset+1),
-                AssemblyLine(LDA, am, addr),
+                AssemblyLine(LDA, am, addr, elidability = el),
                 AssemblyLine.implied(TAX),
                 AssemblyLine.implied(DEY),
-                AssemblyLine(LDA, am, addr)) ++
+                AssemblyLine(LDA, am, addr, elidability = el)) ++
               expressionStorageFromAX(ctx, exprTypeAndVariable, expr.position)
           case _ =>
             exprTypeAndVariable match {
               case Some((variableType, variable)) =>
                 prepare ++ (0 until variableType.size).flatMap { i =>
                   val load =
-                    if (i >= targetType.size) List(AssemblyLine.immediate(LDA, 0))
+                    if (i == targetType.size) signExtendA(ctx)
+                    else if (i > targetType.size) Nil
                     else if (am == AbsoluteY) List(AssemblyLine.absolute(LDA, addr + offset + i))
                     else if (i == 0) List(AssemblyLine.immediate(LDY, offset), AssemblyLine(LDA, am, addr))
                     else List(AssemblyLine.implied(INY), AssemblyLine(LDA, am, addr))
@@ -1141,6 +1244,8 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
               } else {
                 PseudoregisterBuiltIns.compileWordAdditionViaAX(ctx, exprTypeAndVariable, expr.position, params, decimal = decimal)
               }
+            case 0 =>
+              Nil
             case _ =>
               ctx.log.error("Non-in-place addition or subtraction of variables larger than 2 bytes is not supported", expr.position)
               Nil
@@ -1225,8 +1330,13 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
             params match {
               case List(fp) =>
                 getExpressionType(ctx, fp) match {
+                  case KernalInterruptPointerType =>
+                    compileToZReg2(ctx, fp) :+ AssemblyLine.absolute(JSR, env.get[ThingInMemory]("call"))
                   case FunctionPointerType(_, _, _, _, Some(v)) if (v.name == "void") =>
                     compileToZReg2(ctx, fp) :+ AssemblyLine.absolute(JSR, env.get[ThingInMemory]("call"))
+                  case _: FunctionPointerType =>
+                    ctx.log.error("Invalid function pointer type", fp.position)
+                    compile(ctx, fp, None, BranchSpec.None)
                   case _ =>
                     ctx.log.error("Not a function pointer", fp.position)
                     compile(ctx, fp, None, BranchSpec.None)
@@ -1249,6 +1359,9 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
                       ctx.log.error("Invalid parameter type", param.position)
                       compile(ctx, fp, None, BranchSpec.None) ++ compile(ctx, param, None, BranchSpec.None)
                     }
+                  case KernalInterruptPointerType =>
+                    ctx.log.error("Invalid function pointer type", fp.position)
+                    compile(ctx, fp, None, BranchSpec.None)
                   case _ =>
                     ctx.log.error("Not a function pointer", fp.position)
                     compile(ctx, fp, None, BranchSpec.None) ++ compile(ctx, param, None, BranchSpec.None)
@@ -1307,7 +1420,7 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
                   }
                 case None =>
                   assertAllArithmeticBytes("Nonet argument has to be a byte", ctx, params)
-                  params.head match {
+                  if (ctx.options.flag(CompilationFlag.BuggyCodeWarning)) params.head match {
                     case SumExpression(addends, _) =>
                       if (addends.exists(a => a._1)) {
                         ctx.log.warn("Nonet subtraction may not work as expected", expr.position)
@@ -1352,11 +1465,15 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
             }
           case "^^" => ???
           case "&" =>
-            getArithmeticParamMaxSize(ctx, params) match {
+            getArithmeticParamMaxSize(ctx, params, booleanHint = "&&") match {
               case 1 =>
                 zeroExtend = true
                 BuiltIns.compileBitOps(AND, ctx, params)
               case 2 => PseudoregisterBuiltIns.compileWordBitOpsToAX(ctx, params, AND)
+              case 0 => Nil
+              case _ =>
+                ctx.log.error("Non-in-place bit operations of variables larger than 2 bytes are not supported", expr.position)
+                Nil
             }
           case "*" =>
             assertSizesForMultiplication(ctx, params, inPlace = false)
@@ -1367,13 +1484,21 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
               case 2 =>
                 //noinspection ZeroIndexToHead
                 PseudoregisterBuiltIns.compileWordMultiplication(ctx, Some(params(0)), params(1), storeInRegLo = false)
+              case 0 => Nil
+              case _ =>
+                ctx.log.error("Multiplication of variables larger than 2 bytes are not supported", expr.position)
+                Nil
             }
           case "|" =>
-            getArithmeticParamMaxSize(ctx, params) match {
+            getArithmeticParamMaxSize(ctx, params, booleanHint = "||") match {
               case 1 =>
                 zeroExtend = true
                 BuiltIns.compileBitOps(ORA, ctx, params)
               case 2 => PseudoregisterBuiltIns.compileWordBitOpsToAX(ctx, params, ORA)
+              case 0 => Nil
+              case _ =>
+                ctx.log.error("Non-in-place bit operations of variables larger than 2 bytes are not supported", expr.position)
+                Nil
             }
           case "^" =>
             getArithmeticParamMaxSize(ctx, params) match {
@@ -1381,6 +1506,10 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
                 zeroExtend = true
                 BuiltIns.compileBitOps(EOR, ctx, params)
               case 2 => PseudoregisterBuiltIns.compileWordBitOpsToAX(ctx, params, EOR)
+              case 0 => Nil
+              case _ =>
+                ctx.log.error("Non-in-place bit operations of variables larger than 2 bytes are not supported", expr.position)
+                Nil
             }
           case ">>>>" =>
             val (l, r, size) = assertArithmeticBinary(ctx, params)
@@ -1391,7 +1520,10 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
               case 1 =>
                 zeroExtend = true
                 BuiltIns.compileShiftOps(LSR, ctx, l ,r)
-              case _ => ???
+              case 0 => Nil
+              case _ =>
+                ctx.log.error("Non-in-place shifts of variables larger than 2 bytes is not supported", expr.position)
+                Nil
             }
           case "<<" =>
             val (l, r, size) = assertArithmeticBinary(ctx, params)
@@ -1401,6 +1533,7 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
                 BuiltIns.compileShiftOps(ASL, ctx, l, r)
               case 2 =>
                 BuiltIns.maybeCompileShiftFromByteToWord(ctx, l, r, left = true).getOrElse(PseudoregisterBuiltIns.compileWordShiftOps(left = true, ctx, l, r))
+              case 0 => Nil
               case _ =>
                 ctx.log.error("Long shift ops not supported", l.position)
                 Nil
@@ -1413,6 +1546,7 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
                 BuiltIns.compileShiftOps(LSR, ctx, l, r)
               case 2 =>
                 BuiltIns.maybeCompileShiftFromByteToWord(ctx, l, r, left = false).getOrElse(PseudoregisterBuiltIns.compileWordShiftOps(left = false, ctx, l, r))
+              case 0 => Nil
               case _ =>
                 ctx.log.error("Long shift ops not supported", l.position)
                 Nil
@@ -1495,11 +1629,8 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
                 }
               case i if i > 2 =>
                 l match {
-                  case v: VariableExpression =>
+                  case v: LhsExpression =>
                     BuiltIns.compileInPlaceWordOrLongAddition(ctx, v, r, subtract = false, decimal = false)
-                  case _ =>
-                    ctx.log.error("Cannot modify large object accessed via such complex expression", l.position)
-                    compile(ctx, r, None, BranchSpec.None)
                 }
             }
           case "-=" =>
@@ -1514,11 +1645,8 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
                 }
               case i if i > 2 =>
                 l match {
-                  case v: VariableExpression =>
+                  case v: LhsExpression =>
                     BuiltIns.compileInPlaceWordOrLongAddition(ctx, v, r, subtract = true, decimal = false)
-                  case _ =>
-                    ctx.log.error("Cannot modify large object accessed via such complex expression", l.position)
-                    compile(ctx, r, None, BranchSpec.None)
                 }
             }
           case "+'=" =>
@@ -1533,11 +1661,8 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
                 }
               case i if i > 2 =>
                 l match {
-                  case v: VariableExpression =>
+                  case v: LhsExpression =>
                     BuiltIns.compileInPlaceWordOrLongAddition(ctx, v, r, subtract = false, decimal = true)
-                  case _ =>
-                    ctx.log.error("Cannot modify large object accessed via such complex expression", l.position)
-                    compile(ctx, r, None, BranchSpec.None)
                 }
             }
           case "-'=" =>
@@ -1552,11 +1677,8 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
                 }
               case i if i > 2 =>
                 l match {
-                  case v: VariableExpression =>
+                  case v: LhsExpression =>
                     BuiltIns.compileInPlaceWordOrLongAddition(ctx, v, r, subtract = true, decimal = true)
-                  case _ =>
-                    ctx.log.error("Cannot modify large object accessed via such complex expression", l.position)
-                    compile(ctx, r, None, BranchSpec.None)
                 }
             }
           case "<<=" =>
@@ -1625,7 +1747,10 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
                 } else {
                   compileAssignment(ctx, FunctionCallExpression("/", List(l, r)).pos(f.position), l)
                 }
-              case _ => ctx.log.fatal("Oops")
+              case 0 => Nil
+              case _ =>
+                ctx.log.error("Division of variables larger than 2 bytes is not supported", expr.position)
+                Nil
             }
           case "/" | "%%" =>
             assertSizesForDivision(ctx, params, inPlace = false)
@@ -1636,6 +1761,10 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
                 BuiltIns.compileUnsignedByteDivision(ctx, l, r, f.functionName == "%%")
               case 2 =>
                 BuiltIns.compileUnsignedWordByByteDivision(ctx, l, r, f.functionName == "%%")
+              case 0 => Nil
+              case _ =>
+                ctx.log.error("Division of variables larger than 2 bytes is not supported", expr.position)
+                Nil
             }
           case "*'=" =>
             assertAllArithmeticBytes("Long multiplication not supported", ctx, params)
@@ -1678,6 +1807,9 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
             env.maybeGet[Type](f.functionName) match {
               case Some(typ) =>
                 val sourceType = validateTypeCastAndGetSourceExpressionType(ctx, typ, params)
+                if (sourceType.isBoollike) {
+                  return compileToFatBooleanInA(ctx, params.head) ++ expressionStorageFromA(ctx, exprTypeAndVariable, position = expr.position, signedSource = false)
+                }
                 exprTypeAndVariable match {
                   case None =>
                     return compile(ctx, params.head, None, branches)
@@ -1730,22 +1862,22 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
                     if (nf.name == "main" && ctx.options.flag(CompilationFlag.SoftwareStack)) {
                       if (nf.stackVariablesSize != 0 || env.things.values.exists(_.isInstanceOf[StackVariable])) {
                         ctx.log.error("Calling the main function when using software stack is not allowed", expr.position)
-                      } else {
+                      } else if (ctx.options.flag(CompilationFlag.BuggyCodeWarning)) {
                         ctx.log.warn("Calling the main function when using software stack is not allowed", expr.position)
                       }
                     }
                   case _ => ()
                 }
                 val result = function.params match {
-                  case AssemblyParamSignature(paramConvs) =>
+                  case AssemblyOrMacroParamSignature(paramConvs) =>
                     val pairs = params.zip(paramConvs)
                     val secondViaMemory = pairs.flatMap {
-                      case (paramExpr, AssemblyParam(typ, paramVar: VariableInMemory, AssemblyParameterPassingBehaviour.Copy)) =>
+                      case (paramExpr, AssemblyOrMacroParam(typ, paramVar: VariableInMemory, AssemblyParameterPassingBehaviour.Copy)) =>
                         compile(ctx, paramExpr, Some(typ -> paramVar), NoBranching)
                       case _ => Nil
                     }
                     val thirdViaRegisters = pairs.flatMap {
-                      case (paramExpr, AssemblyParam(typ, paramVar@RegisterVariable(register, _), AssemblyParameterPassingBehaviour.Copy)) =>
+                      case (paramExpr, AssemblyOrMacroParam(typ, paramVar@RegisterVariable(register, _), AssemblyParameterPassingBehaviour.Copy)) =>
                         Some(register -> compile(ctx, paramExpr, Some(typ -> paramVar), NoBranching))
                       case _ => Nil
                     } match {
@@ -1753,8 +1885,19 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
                       case Seq((_, param)) => param
                       case Seq((MosRegister.A, pa), (_, pxy)) => pa ++ preserveRegisterIfNeeded(ctx, MosRegister.A, pxy)
                       case Seq((_, pxy), (MosRegister.A, pa)) => pa ++ preserveRegisterIfNeeded(ctx, MosRegister.A, pxy)
+                      case Seq((r1, p1), (r2, p2), (r3, p3)) if Set(r1, r2, r3) == Set(MosRegister.A, MosRegister.X, MosRegister.Y) =>
+                        val pa = if (r1 == MosRegister.A) p1 else if (r2 == MosRegister.A) p2 else if (r3 == MosRegister.A) p3 else ???
+                        val px = if (r1 == MosRegister.X) p1 else if (r2 == MosRegister.X) p2 else if (r3 == MosRegister.X) p3 else ???
+                        val py = if (r1 == MosRegister.Y) p1 else if (r2 == MosRegister.Y) p2 else if (r3 == MosRegister.Y) p3 else ???
+                        if (!px.exists(_.concernsY)) {
+                          pa ++ preserveRegisterIfNeeded(ctx, MosRegister.A, py) ++ preserveRegisterIfNeeded(ctx, MosRegister.AY, px)
+                        } else {
+                          pa ++ preserveRegisterIfNeeded(ctx, MosRegister.A, px) ++ preserveRegisterIfNeeded(ctx, MosRegister.AX, py)
+                        }
                       case other =>
-                        ctx.log.warn("Unsupported register parameter combination: " + other.map(_._1.toString).mkString("(", ",", ")"), expr.position)
+                        if (ctx.options.flag(CompilationFlag.BuggyCodeWarning)) {
+                          ctx.log.warn("Unsupported register parameter combination: " + other.map(_._1.toString).mkString("(", ",", ")"), expr.position)
+                        }
                         other.flatMap(_._2) // TODO : make sure all registers are passed in correctly
                     }
                     secondViaMemory ++ thirdViaRegisters :+ AssemblyLine.absoluteOrLongAbsolute(JSR, function, ctx.options)
@@ -1781,6 +1924,10 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
           calculate ++ compile(ctx, VariableExpression(resultVariable), exprTypeAndVariable, branches)
         }
     }
+  } catch {
+    case ex: ConstantOverflowException =>
+      ctx.log.error(ex.getMessage, ex.position.orElse(expr.position))
+      Nil
   }
 
   private def compileTransitiveRelation(ctx: CompilationContext,
@@ -1803,7 +1950,7 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
             case IndexedExpression(_, GeneratedConstantExpression(_, _)) =>
             case IndexedExpression(_, SumExpression(ps, false)) if isUpToOneVar(ps) =>
             case _ =>
-              ctx.log.warn("A complex expression may be evaluated multiple times", e.position)
+              if (ctx.options.flag(CompilationFlag.BuggyCodeWarning)) ctx.log.warn("A complex expression may be evaluated multiple times", e.position)
           }
         }
         val conjunction = params.init.zip(params.tail).map {
@@ -2097,7 +2244,8 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
       case SeparateBytesExpression(_, _) =>
         ctx.log.error("Invalid left-hand-side use of `:`")
         Nil
-      case DerefExpression(inner, offset, targetType) =>
+      case DerefExpression(inner, offset, isVolatile, targetType) =>
+        val el = if(isVolatile) Elidability.Volatile else Elidability.Elidable
         val (prepare, addr, am, fastTarget) = getPhysicalPointerForDeref(ctx, inner)
         env.eval(source) match {
           case Some(constant) =>
@@ -2105,12 +2253,22 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
               case AbsoluteY =>
                 prepare ++ (0 until targetType.size).flatMap(i => List(
                   AssemblyLine.immediate(LDA, constant.subbyte(i)),
-                  AssemblyLine.absolute(STA, addr + offset + i)))
+                  AssemblyLine.absolute(STA, addr + offset + i).copy(elidability = el)))
               case _ =>
-                prepare ++ (0 until targetType.size).flatMap(i => List(
-                  if (i == 0) AssemblyLine.immediate(LDY, offset) else AssemblyLine.implied(INY),
-                  AssemblyLine.immediate(LDA, constant.subbyte(i)),
-                  AssemblyLine(STA, am, addr)))
+                fastTarget match {
+                  case Some((constAddr, fastAddrMode, initializeY)) =>
+                    initializeY(offset) ++ (0 until targetType.size).flatMap { i =>
+                      val load = List(AssemblyLine.immediate(LDA, constant.subbyte(i)))
+                      load ++ (if (i == 0) List(AssemblyLine(STA, fastAddrMode, constAddr)) else List(
+                        AssemblyLine.implied(INY),
+                        AssemblyLine(STA, fastAddrMode, constAddr, elidability = el)))
+                    }
+                  case _ =>
+                    prepare ++ (0 until targetType.size).flatMap(i => List(
+                      if (i == 0) AssemblyLine.immediate(LDY, offset) else AssemblyLine.implied(INY),
+                      AssemblyLine.immediate(LDA, constant.subbyte(i)),
+                      AssemblyLine(STA, am, addr, elidability = el)))
+                }
             }
           case None =>
             source match {
@@ -2120,61 +2278,57 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
                   case (1, AbsoluteY) =>
                     prepare ++
                       AssemblyLine.variable(ctx, LDA, variable) :+
-                      AssemblyLine.absolute(STA, addr + offset)
-                  case (1, _) =>
+                      AssemblyLine.absolute(STA, addr + offset).copy(elidability = el)
+                  case (1, _) if fastTarget.isEmpty =>
                     prepare ++
                       AssemblyLine.variable(ctx, LDA, variable) ++ List(
                       AssemblyLine.immediate(LDY, offset),
                       AssemblyLine(STA, am, addr))
                   case (_, AbsoluteY) =>
                     prepare ++ (0 until targetType.size).flatMap { i =>
-                      val load = if (i >= sourceType.size) List(AssemblyLine.immediate(LDA, 0)) else AssemblyLine.variable(ctx, LDA, variable, i)
+                      val load = loadSingleByteAssumingAPreserved(ctx, sourceType, variable, i)
                       load ++ List(
-                        AssemblyLine.absolute(STA, addr + offset + i))
+                        AssemblyLine.absolute(STA, addr + offset + i).copy(elidability = el))
                     }
                   case (_, _) =>
-                    prepare ++ (0 until targetType.size).flatMap { i =>
-                      val load = if (i >= sourceType.size) List(AssemblyLine.immediate(LDA, 0)) else AssemblyLine.variable(ctx, LDA, variable, i)
-                      load ++ List(
-                        if (i == 0) AssemblyLine.immediate(LDY, offset) else AssemblyLine.implied(INY),
-                        AssemblyLine(STA, am, addr))
+                    fastTarget match {
+                      case Some((constAddr, fastAddrMode, initializeY)) =>
+                        initializeY(offset) ++ (0 until targetType.size).flatMap { i =>
+                          val load = loadSingleByteAssumingAPreserved(ctx, sourceType, variable, i)
+                          load ++ (if (i == 0) List(AssemblyLine(STA, fastAddrMode, constAddr)) else List(
+                            AssemblyLine.implied(INY),
+                            AssemblyLine(STA, fastAddrMode, constAddr, elidability = el)))
+                        }
+                      case _ =>
+                        prepare ++ (0 until targetType.size).flatMap { i =>
+                          val load = loadSingleByteAssumingAPreserved(ctx, sourceType, variable, i)
+                          load ++ List(
+                            if (i == 0) AssemblyLine.immediate(LDY, offset) else AssemblyLine.implied(INY),
+                            AssemblyLine(STA, am, addr).copy(elidability = el))
+                        }
                     }
                   case _ =>
                     ctx.log.error("Cannot assign to a large object indirectly", target.position)
                     Nil
                 }
-              case DerefExpression(innerSource, sourceOffset, _) =>
+              case DerefExpression(innerSource, sourceOffset, sourceVolatile, _) =>
+                val sEl = if (sourceVolatile) Elidability.Volatile else Elidability.Elidable
                 val (prepareSource, addrSource, amSource, fastSource) = getPhysicalPointerForDeref(ctx, innerSource)
                 (am, amSource) match {
                   case (AbsoluteY, AbsoluteY) =>
                     prepare ++ prepareSource ++ (0 until targetType.size).flatMap { i =>
-                      if (i >= sourceType.size) List(
-                        AssemblyLine.immediate(LDA, 0),
-                        AssemblyLine.absolute(STA, addr + offset + i))
-                      else List(
-                        AssemblyLine.absolute(LDA, addrSource + sourceOffset + i),
-                        AssemblyLine.absolute(STA, addr + offset + i))
+                      loadSingleByteAssumingAPreserved(ctx, sourceType, addrSource + sourceOffset, i, sEl) :+ AssemblyLine.absolute(STA, addr + offset + i).copy(elidability = el)
                     }
                   case (AbsoluteY, _) =>
                     prepare ++ prepareSource ++ (0 until targetType.size).flatMap { i =>
-                      if (i >= sourceType.size) List(
-                        AssemblyLine.immediate(LDA, 0),
-                        AssemblyLine.absolute(STA, addr + offset + i))
-                      else List(
-                        if (i == 0) AssemblyLine.immediate(LDY, sourceOffset) else AssemblyLine.implied(INY),
-                        AssemblyLine(LDA, amSource, addrSource),
-                        AssemblyLine.absolute(STA, addr + offset + i))
+                      loadSingleByteIndexedCountingYAssumingAPreserved(ctx, sourceType, amSource, addrSource, sourceOffset, i, sEl) :+
+                        AssemblyLine.absolute(STA, addr + offset + i).copy(elidability = el)
                     }
                   case (_, AbsoluteY) =>
                     prepare ++ prepareSource ++ (0 until targetType.size).flatMap { i =>
-                      if (i >= sourceType.size) List(
-                        if (i == 0) AssemblyLine.immediate(LDY, sourceOffset) else AssemblyLine.implied(INY),
-                        AssemblyLine.immediate(LDA, 0),
-                        AssemblyLine(STA, am, addr))
-                      else List(
-                        if (i == 0) AssemblyLine.immediate(LDY, sourceOffset) else AssemblyLine.implied(INY),
-                        AssemblyLine.absolute(LDA, addrSource + sourceOffset + i),
-                        AssemblyLine(STA, am, addr))
+                      (if (i == 0) AssemblyLine.immediate(LDY, sourceOffset) else AssemblyLine.implied(INY)) ::
+                        (loadSingleByteAssumingAPreserved(ctx, sourceType, addrSource + sourceOffset, i, sEl) :+
+                        AssemblyLine(STA, am, addr, elidability = el))
                     }
                   case (IndexedY, IndexedY) =>
                     val reg = env.get[ThingInMemory]("__reg.loword")
@@ -2189,14 +2343,9 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
                               AssemblyLine.zeropage(STA, reg, 2),
                               AssemblyLine.zeropage(LDA, reg, 1),
                               AssemblyLine.zeropage(STA, reg, 3)) ++ prepareSource ++ (0 until targetType.size).flatMap { i =>
-                              if (i >= sourceType.size) List(
-                                if (i == 0) AssemblyLine.immediate(LDY, sourceOffset) else AssemblyLine.implied(INY),
-                                AssemblyLine.immediate(LDA, 0),
-                                AssemblyLine.indexedY(STA, reg, 2))
-                              else List(
-                                if (i == 0) AssemblyLine.immediate(LDY, sourceOffset) else AssemblyLine.implied(INY),
-                                AssemblyLine.indexedY(LDA, reg),
-                                AssemblyLine.indexedY(STA, reg, 2))
+                              (if (i == 0) AssemblyLine.immediate(LDY, sourceOffset) else AssemblyLine.implied(INY)) ::
+                                (loadSingleByteIndexedAssumingAPreserved(ctx, sourceType, IndexedY, reg.toAddress, i, elidability = sEl) :+
+                                AssemblyLine.indexedY(STA, reg, 2).copy(elidability = el))
                             }
                           case (false, true) =>
                             prepareSource ++ List(
@@ -2204,14 +2353,9 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
                               AssemblyLine.zeropage(STA, reg, 2),
                               AssemblyLine.zeropage(LDA, reg, 1),
                               AssemblyLine.zeropage(STA, reg, 3)) ++ prepare ++ (0 until targetType.size).flatMap { i =>
-                              if (i >= sourceType.size) List(
-                                if (i == 0) AssemblyLine.immediate(LDY, sourceOffset) else AssemblyLine.implied(INY),
-                                AssemblyLine.immediate(LDA, 0),
-                                AssemblyLine.indexedY(STA, reg))
-                              else List(
-                                if (i == 0) AssemblyLine.immediate(LDY, sourceOffset) else AssemblyLine.implied(INY),
-                                AssemblyLine.indexedY(LDA, reg, 2),
-                                AssemblyLine.indexedY(STA, reg))
+                              (if (i == 0) AssemblyLine.immediate(LDY, sourceOffset) else AssemblyLine.implied(INY)) ::
+                                (loadSingleByteIndexedAssumingAPreserved(ctx, sourceType, IndexedY, reg.toAddress + 2, i, elidability = sEl) :+
+                                AssemblyLine.indexedY(STA, reg).copy(elidability = el))
                             }
                           case _ =>
                             prepare ++ List(
@@ -2223,19 +2367,22 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
                               AssemblyLine.zeropage(STA, reg, 2),
                               AssemblyLine.implied(PLA),
                               AssemblyLine.zeropage(STA, reg, 3)) ++ (0 until targetType.size).flatMap { i =>
-                              if (i >= sourceType.size) List(
-                                if (i == 0) AssemblyLine.immediate(LDY, sourceOffset) else AssemblyLine.implied(INY),
-                                AssemblyLine.immediate(LDA, 0),
-                                AssemblyLine.indexedY(STA, reg, 2))
-                              else List(
-                                if (i == 0) AssemblyLine.immediate(LDY, sourceOffset) else AssemblyLine.implied(INY),
-                                AssemblyLine.indexedY(LDA, reg),
-                                AssemblyLine.indexedY(STA, reg, 2))
+                              (if (i == 0) AssemblyLine.immediate(LDY, sourceOffset) else AssemblyLine.implied(INY)) ::
+                                (loadSingleByteIndexedAssumingAPreserved(ctx, sourceType, IndexedY, reg.toAddress, i, sEl) :+
+                                AssemblyLine.indexedY(STA, reg, 2).copy(elidability = el))
                             }
                         }
-                      case _ => ???
+                      case (MemoryAddressConstant(thT: MemoryVariable), MemoryAddressConstant(thS: MemoryVariable)) if thT.name != thS.name =>
+                        prepare ++ prepareSource ++ (0 until targetType.size).flatMap { i =>
+                          (if (i == 0) AssemblyLine.immediate(LDY, sourceOffset) else AssemblyLine.implied(INY)) ::
+                            (loadSingleByteIndexedAssumingAPreserved(ctx, sourceType, IndexedY, thS.toAddress, i, sEl) :+
+                            AssemblyLine.indexedY(STA, thT).copy(elidability = el))
+                        }
+                      case _ =>
+                        ???
                     }
-                  case _ => ???
+                  case _ =>
+                    ???
                 }
               case _ =>
                 (targetType.size, am) match {
@@ -2246,38 +2393,49 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
                     // TODO: optimize if prepare is empty
                     if (prepare.isEmpty) {
                       compile(ctx, source, someTuple, BranchSpec.None) ++ List(
-                        AssemblyLine.absolute(STA, addr + offset),
-                        AssemblyLine.absolute(STX, addr + offset + 1))
+                        AssemblyLine.absolute(STA, addr + offset).copy(elidability = el),
+                        AssemblyLine.absolute(STX, addr + offset + 1).copy(elidability = el))
                     } else {
                       compile(ctx, source, someTuple, BranchSpec.None) ++ List(
                         AssemblyLine.implied(PHA),
                         AssemblyLine.implied(TXA),
                         AssemblyLine.implied(PHA)) ++ prepare ++ List(
                         AssemblyLine.implied(PLA),
-                        AssemblyLine.absolute(STA, addr + offset + 1),
+                        AssemblyLine.absolute(STA, addr + offset + 1).copy(elidability = el),
                         AssemblyLine.implied(PLA),
-                        AssemblyLine.absolute(STA, addr + offset))
+                        AssemblyLine.absolute(STA, addr + offset).copy(elidability = el))
                     }
                   case (2, _) =>
                     val someTuple = Some(targetType, RegisterVariable(MosRegister.AX, targetType))
-                    if (prepare.isEmpty) {
-                      compile(ctx, source, someTuple, BranchSpec.None) ++ List(
-                        AssemblyLine.immediate(LDY, offset),
-                        AssemblyLine.indexedY(STA, addr),
-                        AssemblyLine.implied(TXA),
-                        AssemblyLine.implied(INY),
-                        AssemblyLine.indexedY(STA, addr))
-                    } else {
-                      compile(ctx, source, someTuple, BranchSpec.None) ++ List(
-                        AssemblyLine.implied(PHA),
-                        AssemblyLine.implied(TXA),
-                        AssemblyLine.implied(PHA)) ++ prepare ++ List(
-                        AssemblyLine.immediate(LDY, offset+1),
-                        AssemblyLine.implied(PLA),
-                        AssemblyLine.indexedY(STA, addr),
-                        AssemblyLine.implied(PLA),
-                        AssemblyLine.implied(DEY),
-                        AssemblyLine.indexedY(STA, addr))
+                    fastTarget match {
+                      case Some((baseOffset, fastAddrMode, initializeY)) =>
+                        compile(ctx, source, someTuple, BranchSpec.None) ++
+                          preserveRegisterIfNeeded(ctx, MosRegister.AX, initializeY(offset)) ++
+                          List(
+                            AssemblyLine(STA, fastAddrMode, baseOffset, elidability = el),
+                            AssemblyLine.implied(TXA),
+                            AssemblyLine.implied(INY),
+                            AssemblyLine(STA, fastAddrMode, baseOffset, elidability = el))
+                      case _ =>
+                        if (prepare.isEmpty) {
+                          compile(ctx, source, someTuple, BranchSpec.None) ++ List(
+                            AssemblyLine.immediate(LDY, offset),
+                            AssemblyLine.indexedY(STA, addr).copy(elidability = el),
+                            AssemblyLine.implied(TXA),
+                            AssemblyLine.implied(INY),
+                            AssemblyLine.indexedY(STA, addr).copy(elidability = el))
+                        } else {
+                          compile(ctx, source, someTuple, BranchSpec.None) ++ List(
+                            AssemblyLine.implied(PHA),
+                            AssemblyLine.implied(TXA),
+                            AssemblyLine.implied(PHA)) ++ prepare ++ List(
+                            AssemblyLine.immediate(LDY, offset+1),
+                            AssemblyLine.implied(PLA),
+                            AssemblyLine.indexedY(STA, addr).copy(elidability = el),
+                            AssemblyLine.implied(PLA),
+                            AssemblyLine.implied(DEY),
+                            AssemblyLine.indexedY(STA, addr).copy(elidability = el))
+                        }
                     }
                   case _ =>
                     ctx.log.error("Cannot assign to a large object indirectly", target.position)
@@ -2295,13 +2453,44 @@ object MosExpressionCompiler extends AbstractExpressionCompiler[AssemblyLine] {
     }
   }
 
+  private def loadSingleByteAssumingAPreserved(ctx: CompilationContext, sourceType: Type, variable: Variable, i: Int) = {
+    if (i == sourceType.size) {
+      if (sourceType.isSigned) signExtendA(ctx) else List(AssemblyLine.immediate(LDA, 0))
+    } else if (i > sourceType.size) Nil
+    else AssemblyLine.variable(ctx, LDA, variable, i)
+  }
+
+  private def loadSingleByteAssumingAPreserved(ctx: CompilationContext, sourceType: Type, varAddr: Constant, i: Int, elidability: Elidability.Value) = {
+    if (i == sourceType.size) {
+      if (sourceType.isSigned) signExtendA(ctx) else List(AssemblyLine.immediate(LDA, 0))
+    } else if (i > sourceType.size) Nil
+    else List(AssemblyLine(LDA, Absolute, varAddr + i, elidability))
+  }
+
+  private def loadSingleByteIndexedAssumingAPreserved(ctx: CompilationContext, sourceType: Type, addrMode: AddrMode.Value, baseAddr: Constant, i: Int, elidability: Elidability.Value) = {
+    if (i == sourceType.size) {
+      if (sourceType.isSigned) signExtendA(ctx) else List(AssemblyLine.immediate(LDA, 0))
+    } else if (i > sourceType.size) Nil
+    else List(AssemblyLine(LDA, addrMode, baseAddr, elidability))
+  }
+
+  private def loadSingleByteIndexedCountingYAssumingAPreserved(ctx: CompilationContext, sourceType: Type, addrMode: AddrMode.Value, baseAddr: Constant, sourceOffset:Int, i: Int, elidability: Elidability.Value) = {
+    if (i == sourceType.size) {
+      if (sourceType.isSigned) signExtendA(ctx) else List(AssemblyLine.immediate(LDA, 0))
+    } else if (i > sourceType.size) Nil
+    else List(if(i==0) AssemblyLine.immediate(LDY, sourceOffset) else AssemblyLine.implied(INY), AssemblyLine(LDA, addrMode, baseAddr, elidability))
+  }
+
   def arrayBoundsCheck(ctx: CompilationContext, pointy: Pointy, register: MosRegister.Value, index: Expression): List[AssemblyLine] = {
     if (!ctx.options.flags(CompilationFlag.CheckIndexOutOfBounds)) return Nil
     val arrayLength:Int = pointy match {
       case _: VariablePointy => return Nil
       case p: ConstantPointy => p.sizeInBytes match {
         case None => return Nil
-        case Some(s) => s
+        case Some(s) =>
+          // don't do checks on arrays size 0 or 1
+          if (p.elementCount.exists(_ < 2)) return Nil
+          s
       }
     }
     ctx.env.eval(index) match {

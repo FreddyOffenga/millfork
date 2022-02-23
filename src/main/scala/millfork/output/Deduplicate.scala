@@ -14,7 +14,7 @@ abstract class Deduplicate[T <: AbstractCode](env: Environment, options: Compila
 
   def apply(compiledFunctions: mutable.Map[String, CompiledFunction[T]]): Unit = {
     if (options.flag(CompilationFlag.SubroutineExtraction)) {
-      runStage(compiledFunctions, extractCommonCode)
+      while(runStage(compiledFunctions, extractCommonCode)){}
     }
     if (options.flag(CompilationFlag.FunctionDeduplication)) {
       runStage(compiledFunctions, deduplicateIdenticalFunctions)
@@ -39,13 +39,17 @@ abstract class Deduplicate[T <: AbstractCode](env: Environment, options: Compila
   def removeChains(map: Map[String, String]): Map[String, String] = map.filterNot{case (_, to) => map.contains(to)}
 
   def runStage(compiledFunctions: mutable.Map[String, CompiledFunction[T]],
-               function: (String, Map[String, Either[String, CodeAndAlignment[T]]]) => Seq[(String, CompiledFunction[T])]): Unit = {
+               function: (String, Map[String, Either[String, CodeAndAlignment[T]]]) => Seq[(String, CompiledFunction[T])]): Boolean = {
+    var progress = false
     bySegment(compiledFunctions).foreach {
       case (segmentName, segContents) =>
-        function(segmentName, segContents).foreach {
+        val segmentDelta = function(segmentName, segContents)
+        progress |= segmentDelta.nonEmpty
+        segmentDelta.foreach {
           case (fname, cf) => compiledFunctions(fname) = cf
         }
     }
+    progress
   }
 
   def extractCommonCode(segmentName: String, segContents: Map[String, Either[String, CodeAndAlignment[T]]]): Seq[(String, CompiledFunction[T])] = {
@@ -57,8 +61,9 @@ abstract class Deduplicate[T <: AbstractCode](env: Environment, options: Compila
     var result = ListBuffer[(String, CompiledFunction[T])]()
     val snippets: Seq[(List[T], CodeChunk[T])] = segContents.toSeq.flatMap {
       case (_, Left(_)) => Nil
-      case (functionName, Right(CodeAndAlignment(code, _))) =>
-        getExtractableSnippets(functionName, code).filter(_.codeSizeInBytes.>=(minSnippetSize)).map(code -> _)
+      case (functionName, Right(CodeAndAlignment(code, optimizationFlags, _))) =>
+        if (optimizationFlags("hot") || functionName.startsWith(".xc")) Nil
+        else getExtractableSnippets(functionName, code).filter(_.codeSizeInBytes.>=(minSnippetSize)).map(code -> _)
     }
     val chunksWithThresholds: Seq[(CodeChunk[T], Int)] = snippets.flatMap { case (wholeCode, snippet) =>
       for {
@@ -87,17 +92,18 @@ abstract class Deduplicate[T <: AbstractCode](env: Environment, options: Compila
     if (chunksWithThresholds.isEmpty) return Nil
     var chunks = chunksWithThresholds.map(_._1)
     var threshold = 1
-    while (chunks.length > 64) {
+    while (chunks.length > 100 || chunks.length > 20 && !allChunksDisjoint(chunks)) {
+      env.log.trace(s"Current threshold: $threshold current chunk count ${chunks.size}")
       threshold = chunksWithThresholds.filter(c => c._2 >= threshold).map(_._2).min + 1
       chunks = chunksWithThresholds.filter(c => c._2 >= threshold).map(_._1)
     }
     env.log.debug(s"Requiring $threshold profit trimmed the chunk candidate list from ${chunksWithThresholds.size} to ${chunks.size}")
+    if (env.log.traceEnabled) {
+      chunksWithThresholds.filter(c => c._2 >= threshold).foreach(c => env.log.trace(c.toString))
+    }
     if (chunks.length < 20) env.log.debug(s"Chunks: ${chunks.length} $chunks") else env.log.debug(s"Chunks: ${chunks.length}")
-    val candidates: Seq[(Int, Map[List[T], Seq[CodeChunk[T]]])] = powerSet(chunks)((set, chunk) => !set.exists(_ & chunk)).filter(_.nonEmpty).filter(set => (for {
-      x <- set
-      y <- set
-      if x != y
-    } yield x & y).forall(_ == false)).toSeq.map(_.groupBy(chunk => chunk.renumerateLabels(this, temporary = true).value).filter(_._2.size >= 2).mapValues(_.toSeq).view.force).filter(_.nonEmpty).map { map =>
+    val powerset = if (allChunksDisjoint(chunks)) Seq(chunks) else powerSet(chunks)((set, chunk) => !set.exists(_ & chunk)).filter(_.nonEmpty).filter(set => allChunksDisjoint(set)).toSeq
+    val candidates: Seq[(Int, Map[List[T], Seq[CodeChunk[T]]])] = powerset.map(_.groupBy(chunk => chunk.renumerateLabels(this, temporary = true).value).filter(_._2.size >= 2).mapValues(_.toSeq).view.force).filter(_.nonEmpty).map { map =>
       map.foldLeft(0) {
         (sum, entry) =>
           val chunkSize = entry._2.head.codeSizeInBytes
@@ -108,11 +114,7 @@ abstract class Deduplicate[T <: AbstractCode](env: Environment, options: Compila
       } -> map
     }.filter { set =>
       val allChunks = set._2.values.flatten
-      (for {
-        x <- allChunks
-        y <- allChunks
-        if x != y
-      } yield x & y).forall(_ == false)
+      allChunksDisjoint(allChunks)
     }
 //    candidates.sortBy(_._1).foreach {
 //      case (profit, map) =>
@@ -133,7 +135,7 @@ abstract class Deduplicate[T <: AbstractCode](env: Environment, options: Compila
       for((code, instances) <- best._2) {
         val newName = env.nextLabel("xc")
         val newCode = createLabel(newName) :: tco(instances.head.renumerateLabels(this, temporary = false).value :+ createReturn)
-        result += newName -> NormalCompiledFunction(segmentName, newCode, hasFixedAddress = false, alignment = NoAlignment)
+        result += newName -> NormalCompiledFunction(segmentName, newCode, hasFixedAddress = false, optimizationFlags = Set.empty, alignment = NoAlignment)
         for(instance <- instances) {
           toReplace(instance.functionName)(instance.offset) = newName
           for (i <- instance.offset + 1 until instance.endOffset) {
@@ -152,7 +154,7 @@ abstract class Deduplicate[T <: AbstractCode](env: Environment, options: Compila
                else if (linesToReplace.contains(i)) Some(createCall(linesToReplace(i)))
                else Some(line)
           }
-          NormalCompiledFunction(segmentName, tco(newCode), hasFixedAddress = false, alignment = value.alignment)
+          NormalCompiledFunction(segmentName, tco(newCode), hasFixedAddress = false, optimizationFlags = value.optimizationFlags, alignment = value.alignment)
         }
       }
 
@@ -178,10 +180,11 @@ abstract class Deduplicate[T <: AbstractCode](env: Environment, options: Compila
           result += function -> RedirectedFunction(segmentName, representative, 0)
         } else {
           segContents(function) match {
-            case Right(CodeAndAlignment(code, alignment)) =>
+            case Right(CodeAndAlignment(code, optimizationFlags, alignment)) =>
               result += function -> NormalCompiledFunction(segmentName,
                 set.toList.map(name => createLabel(name)) ++ actualCode(function, code),
                 hasFixedAddress = false,
+                optimizationFlags = optimizationFlags,
                 alignment = alignment)
             case Left(_) =>
           }
@@ -211,7 +214,7 @@ abstract class Deduplicate[T <: AbstractCode](env: Environment, options: Compila
   def eliminateTailJumps(segmentName: String, segContents: Map[String, Either[String, CodeAndAlignment[T]]]): Seq[(String, CompiledFunction[T])] = {
     var result = ListBuffer[(String, CompiledFunction[T])]()
     val fallThroughList = segContents.flatMap {
-      case (name, Right(CodeAndAlignment(code, alignment))) =>
+      case (name, Right(CodeAndAlignment(code, optimizationFlags, alignment))) =>
         if (code.isEmpty) None
         else getJump(code.last)
           .filter(segContents.contains)
@@ -231,6 +234,7 @@ abstract class Deduplicate[T <: AbstractCode](env: Environment, options: Compila
         result += from -> NormalCompiledFunction(segmentName,
           init ++ segContents(to).right.get.code,
           hasFixedAddress = false,
+          optimizationFlags = value.optimizationFlags,
           alignment = value.alignment
         )
         val initSize = init.map(_.sizeInBytes).sum
@@ -246,7 +250,7 @@ abstract class Deduplicate[T <: AbstractCode](env: Environment, options: Compila
   def eliminateRemainingTrivialTailJumps(segmentName: String, segContents: Map[String, Either[String, CodeAndAlignment[T]]]): Seq[(String, CompiledFunction[T])] = {
     var result = ListBuffer[(String, CompiledFunction[T])]()
     val fallThroughList = segContents.flatMap {
-      case (name, Right(CodeAndAlignment(code, alignment))) =>
+      case (name, Right(CodeAndAlignment(code, optimizationFlags, alignment))) =>
         if (code.length != 2) None
         else getJump(code.last)
           .filter(segContents.contains)
@@ -266,11 +270,12 @@ abstract class Deduplicate[T <: AbstractCode](env: Environment, options: Compila
             case Some(actualTo) =>
               options.log.trace(s"which physically is $actualTo")
               val value = result.find(_._1 == actualTo).fold(segContents(actualTo).right.get){
-                case (_, NormalCompiledFunction(_, code, _, alignment)) => CodeAndAlignment(code, alignment)
+                case (_, NormalCompiledFunction(_, code, _, optimizationFlags, alignment)) => CodeAndAlignment(code, optimizationFlags, alignment)
               }
               result += actualTo -> NormalCompiledFunction(segmentName,
                 createLabel(from) :: value.code,
                 hasFixedAddress = false,
+                optimizationFlags = value.optimizationFlags,
                 alignment = value.alignment
               )
             case _ =>
@@ -324,7 +329,7 @@ abstract class Deduplicate[T <: AbstractCode](env: Environment, options: Compila
 
   def bySegment(compiledFunctions: mutable.Map[String, CompiledFunction[T]]): Map[String, Map[String, Either[String, CodeAndAlignment[T]]]] = {
     compiledFunctions.flatMap {
-      case (name, NormalCompiledFunction(segment, code, false, alignment)) => Some((segment, name, Right(CodeAndAlignment(code, alignment)))) // TODO
+      case (name, NormalCompiledFunction(segment, code, false, optimizationFlags, alignment)) => Some((segment, name, Right(CodeAndAlignment(code, optimizationFlags, alignment)))) // TODO
       case (name, RedirectedFunction(segment, target, 0)) => Some((segment, name, Left(target))) // TODO
       case _ => None
     }.groupBy(_._1).mapValues(_.map { case (_, name, code) => name -> code }.toMap).view.force
@@ -367,9 +372,18 @@ abstract class Deduplicate[T <: AbstractCode](env: Environment, options: Compila
     env.log.trace("Powerset size: " +  ps.size)
     ps
   }
+
+  def allChunksDisjoint(t: Iterable[CodeChunk[T]]): Boolean = {
+    for (x <- t) {
+      for (y <- t) {
+        if ((x & y) && x != y) return false
+      }
+    }
+    true
+  }
 }
 
-case class CodeAndAlignment[T <: AbstractCode](code: List[T], alignment: MemoryAlignment)
+case class CodeAndAlignment[T <: AbstractCode](code: List[T], optimizationFlags: Set[String], alignment: MemoryAlignment)
 
 case class CodeChunk[T <: AbstractCode](functionName: String, offset: Int, endOffset: Int)(val code: List[T]) {
 
@@ -385,6 +399,7 @@ case class CodeChunk[T <: AbstractCode](functionName: String, offset: Int, endOf
     renumerated
   }
 
+  @inline
   def codeSizeInBytes: Int = {
     if (codeSizeMeasured < 0) {
       codeSizeMeasured = code.map(_.sizeInBytes).sum
@@ -392,6 +407,7 @@ case class CodeChunk[T <: AbstractCode](functionName: String, offset: Int, endOf
     codeSizeMeasured
   }
 
+  @inline
   def &(that: CodeChunk[T]): Boolean =
     this.functionName == that.functionName &&
       this.offset <= that.endOffset &&

@@ -19,12 +19,12 @@ object UnusedLocalVariables extends NodeOptimization {
       Nil
   }
 
-  def getAllLocalVariables(statements: List[Statement]): List[String] = statements.flatMap {
-    case v: VariableDeclarationStatement => List(v.name)
+  def getAllRemovableLocalVariables(statements: List[Statement]): List[String] = statements.flatMap {
+    case v: VariableDeclarationStatement => if (v.volatile) Nil else List(v.name)
     case v: ArrayDeclarationStatement => List(v.name)
-    case x: IfStatement => getAllLocalVariables(x.thenBranch) ++ getAllLocalVariables(x.elseBranch)
-    case x: WhileStatement => getAllLocalVariables(x.body)
-    case x: DoWhileStatement => getAllLocalVariables(x.body)
+    case x: IfStatement => getAllRemovableLocalVariables(x.thenBranch) ++ getAllRemovableLocalVariables(x.elseBranch)
+    case x: WhileStatement => getAllRemovableLocalVariables(x.body)
+    case x: DoWhileStatement => getAllRemovableLocalVariables(x.body)
     case _ => Nil
   }
 
@@ -42,7 +42,7 @@ object UnusedLocalVariables extends NodeOptimization {
     case SumExpression(xs, _) => getAllReadVariables(xs.map(_._2))
     case FunctionCallExpression(_, xs) => getAllReadVariables(xs)
     case IndexedExpression(arr, index) => arr :: getAllReadVariables(List(index))
-    case DerefExpression(inner, _, _) => getAllReadVariables(List(inner))
+    case DerefExpression(inner, _, _, _) => getAllReadVariables(List(inner))
     case DerefDebuggingExpression(inner, _) => getAllReadVariables(List(inner))
     case IndirectFieldExpression(inner, firstIndices, fields) => getAllReadVariables(List(inner) ++ firstIndices ++ fields.flatMap(_._3))
     case SeparateBytesExpression(h, l) => getAllReadVariables(List(h, l))
@@ -55,7 +55,7 @@ object UnusedLocalVariables extends NodeOptimization {
   }
 
   def optimizeVariables(log: Logger, statements: List[Statement]): List[Statement] = {
-    val allLocals = getAllLocalVariables(statements)
+    val allLocals = getAllRemovableLocalVariables(statements)
     val allRead = statements.flatMap {
           case Assignment(VariableExpression(v), expression) => List(extractThingName(v) -> expression)
           case ExpressionStatement(FunctionCallExpression(op, VariableExpression(_) :: params)) if op.endsWith("=") => params.map("```" -> _)
@@ -63,7 +63,7 @@ object UnusedLocalVariables extends NodeOptimization {
         }.flatMap(getAllReadVariables(_)).toSet
     val localsToRemove = allLocals.filterNot(allRead).toSet
     if (localsToRemove.nonEmpty) {
-      log.debug("Removing unused local variables: " + localsToRemove.mkString(", "))
+      log.debug("Removing unused local variables: " + localsToRemove.toSeq.sorted.mkString(", "))
     }
     removeVariables(statements, localsToRemove)
   }

@@ -4,7 +4,7 @@
 
 Variables in Millfork can belong to one of the following storage classes:
 
-* static: all global variables; local variables declared with `static`
+* static: all global variables; local variables declared with `static` or `volatile`
 
 * stack: local variables declared with `stack`
 
@@ -45,6 +45,8 @@ but the main disadvantages are:
 * their addresses are not considered constants and it's slower to get them
 
 * cannot use them in inline assembly code blocks
+
+* structs and unions containing array fields are not supported
 
 The implementation depends on the target architecture:
 

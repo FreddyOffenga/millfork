@@ -11,6 +11,19 @@ import millfork.{CompilationFlag, CompilationOptions}
 //noinspection TypeAnnotation
 object OpcodeClasses {
 
+  val SingleBit = Set(
+    BBR0, BBR1, BBR2, BBR3, BBR4, BBR5, BBR6, BBR7,
+    BBS0, BBS1, BBS2, BBS3, BBS4, BBS5, BBS6, BBS7,
+    RMB0, RMB1, RMB2, RMB3, RMB4, RMB5, RMB6, RMB7,
+    SMB0, SMB1, SMB2, SMB3, SMB4, SMB5, SMB6, SMB7
+  )
+  val SingleBitBranch = Set(
+    BBR0, BBR1, BBR2, BBR3, BBR4, BBR5, BBR6, BBR7,
+    BBS0, BBS1, BBS2, BBS3, BBS4, BBS5, BBS6, BBS7
+  )
+
+  val HudsonTransfer = Set(TAI, TIA, TDD, TIN, TII)
+
   val ReadsAAlways = Set(
     ADC, AND, BIT, CMP, EOR, ORA, PHA, SBC, STA,
     ADC_W, AND_W, BIT_W, CMP_W, EOR_W, ORA_W, PHA_W, SBC_W, STA_W,
@@ -40,7 +53,7 @@ object OpcodeClasses {
     TXA, TXS, SBX,
     PLX, PLX_W,
     XAA, SAX, AHX, SHX, TAS,
-    HuSAX, SXY,
+    HuSAX, SXY, SET,
     TXY,
   )
   val ReadsYAlways = Set(CPY, DEY, INY, STY, TYA, PLY, SHY, SAY, SXY, TYX)
@@ -138,9 +151,11 @@ object OpcodeClasses {
     STA, STY, STZ, STX,
     STA_W, STY_W, STZ_W, STX_W,
     TRB, TSB,
+    TRB_W, TSB_W,
     SAX, DCP, ISC,
     SLO, RLA, SRE, RRA,
     AHX, SHY, SHX, TAS, LAS,
+    TAM, TIN, TII, TIA, TAI, TST, TDD,
     COP,
     CHANGED_MEM,
   )
@@ -159,8 +174,9 @@ object OpcodeClasses {
     LAS,
     TRB, TSB,
     TRB_W, TSB_W,
+    TST, TAM, TII, TAI, TIN, TIA, TDD,
     CHANGED_MEM,
-  )
+  ) ++ SingleBitBranch
 
   val AccessesWordInMemory = Set(
     LDA_W, LDX_W, LDY_W,
@@ -272,6 +288,17 @@ object OpcodeClasses {
     SHY,
   )
 
+  val SupportsZeroPageX = Set(
+    ORA, AND, EOR, ADC, CMP, SBC,
+    ORA_W, AND_W, EOR_W, ADC_W, CMP_W, SBC_W,
+    ASL, ROL, LSR, ROR, DEC, INC,
+    ASL_W, ROL_W, LSR_W, ROR_W, DEC_W, INC_W,
+    SLO, RLA, SRE, RRA, DCP, ISC,
+    ASR,
+    STA, LDA, LDY, STY, STZ,
+    STA_W, LDA_W, LDY_W, STY_W, STZ_W,
+  )
+
   val SupportsAbsoluteY = Set(
     ORA, AND, EOR, ADC, CMP, SBC,
     ORA_W, AND_W, EOR_W, ADC_W, CMP_W, SBC_W,
@@ -279,6 +306,12 @@ object OpcodeClasses {
     STA, LDA, LDX,
     STA_W, LDA_W, LDX_W,
     LAX, AHX, SHX, TAS, LAS,
+  )
+
+  val SupportsZeroPageY = Set(
+    LDX, STX,
+    LDX_W, STX_W,
+    SAX, LAX,
   )
 
   val SupportsAbsolute = Set(
@@ -325,7 +358,7 @@ object OpcodeClasses {
     STZ, PHX, PHY, PLX, PLY, TSB, TRB,
     STZ_W, PHX_W, PHY_W, PLX_W, PLY_W, TSB_W, TRB_W,
     SLO, RLA, SRE, RRA, SAX, LAX, DCP, ISC,
-    ANC, ALR, ARR, XAA, LXA, SBX,
+    ANC, ALR, ARR, XAA, LXA, SBX, KIL,
     CPZ, LDZ, INZ, DEZ,
     TAZ, TZA, TYS, TSY,
     TBA,
@@ -389,7 +422,7 @@ object AssemblyLine {
   private val opcodesForZeroedVariableOperation = Set(ADC, EOR, ORA, AND, SBC, CMP, CPX, CPY)
   private val opcodesForZeroedOrSignExtendedVariableOperation = Set(LDA, LDX, LDY, LDZ)
 
-  def variable(ctx: CompilationContext, opcode: Opcode.Value, variable: Variable, offset: Int = 0): List[AssemblyLine] =
+  def variable(ctx: CompilationContext, opcode: Opcode.Value, variable: Variable, offset: Int = 0, preserveA: Boolean = false): List[AssemblyLine] =
     if (offset >= variable.typ.size) {
       if (opcodesForNopVariableOperation(opcode)) {
         Nil
@@ -399,16 +432,28 @@ object AssemblyLine {
       } else if (opcodesForZeroedOrSignExtendedVariableOperation(opcode)) {
         if (variable.typ.isSigned) {
           val label = ctx.nextLabel("sx")
-          AssemblyLine.variable(ctx, LDA, variable, variable.typ.size - 1) ++ List(
+          val loadHiByteToA = AssemblyLine.variable(ctx, LDA, variable, variable.typ.size - 1)
+          val signExtend = List(
             AssemblyLine.immediate(ORA, 0x7f),
             AssemblyLine.relative(BMI, label),
             AssemblyLine.immediate(LDA, 0),
-            AssemblyLine.label(label)) ++ (opcode match {
-            case LDA => Nil
-            case LDX | LAX => List(AssemblyLine.implied(TAX))
-            case LDY => List(AssemblyLine.implied(TAY))
-            case LDZ => List(AssemblyLine.implied(TAZ))
-          })
+            AssemblyLine.label(label))
+          if (preserveA) {
+            opcode match {
+              case LDA => loadHiByteToA ++ signExtend
+              case LAX => loadHiByteToA ++ signExtend ++ List(AssemblyLine.implied(TAX))
+              case LDX => loadHiByteToA ++ List(AssemblyLine.implied(PHA)) ++ signExtend ++ List(AssemblyLine.implied(TAX), AssemblyLine.implied(PLA))
+              case LDY => loadHiByteToA ++ List(AssemblyLine.implied(PHA)) ++ signExtend ++ List(AssemblyLine.implied(TAY), AssemblyLine.implied(PLA))
+              case LDZ => loadHiByteToA ++ List(AssemblyLine.implied(PHA)) ++ signExtend ++ List(AssemblyLine.implied(TAZ), AssemblyLine.implied(PLA))
+            }
+          } else {
+            opcode match {
+              case LDA => loadHiByteToA ++ signExtend
+              case LDX | LAX => loadHiByteToA ++ signExtend ++ List(AssemblyLine.implied(TAX))
+              case LDY => loadHiByteToA ++ signExtend ++ List(AssemblyLine.implied(TAY))
+              case LDZ => loadHiByteToA ++ signExtend ++ List(AssemblyLine.implied(TAZ))
+            }
+          }
         } else {
           List(AssemblyLine.immediate(opcode, 0))
         }
@@ -468,9 +513,6 @@ object AssemblyLine {
   def dataStackX(ctx: CompilationContext, opcode: Opcode.Value, offset: Int): AssemblyLine =
     if (ctx.options.flag(CompilationFlag.SoftwareStack)) {
       val stack = ctx.env.get[ThingInMemory]("__stack")
-      if (offset == 0x108) {
-        println()
-      }
       AssemblyLine.absoluteX(opcode, stack.toAddress + (offset - 0x100))
     } else if (ctx.options.flag(CompilationFlag.EmitEmulation65816Opcodes)) {
       AssemblyLine.stackRelative(opcode, offset + ctx.extraStackOffset)
@@ -516,6 +558,8 @@ object AssemblyLine0 {
 }
 
 case class AssemblyLine(opcode: Opcode.Value, addrMode: AddrMode.Value, var parameter: Constant, elidability: Elidability.Value = Elidability.Elidable, source: Option[SourceLine] = None) extends AbstractCode {
+
+  def applyVolatile(v: Boolean): AssemblyLine = if (v) copy(elidability = Elidability.Volatile) else this
 
   def pos(s: Option[SourceLine]): AssemblyLine = if (s.isEmpty || s == source) this else this.copy(source = s)
 
@@ -605,8 +649,9 @@ case class AssemblyLine(opcode: Opcode.Value, addrMode: AddrMode.Value, var para
   override def sizeInBytes: Int = addrMode match {
     case Implied | RawByte => 1
     case Relative | ZeroPageX | ZeroPage | ZeroPageY | IndexedZ | IndexedX | IndexedY | IndexedSY | Stack | LongIndexedY | LongIndexedZ | Immediate => 2
-    case AbsoluteIndexedX | AbsoluteX | Absolute | AbsoluteY | Indirect | LongRelative | WordImmediate => 3
-    case LongAbsolute | LongAbsoluteX | LongIndirect => 4
+    case AbsoluteIndexedX | AbsoluteX | Absolute | AbsoluteY | Indirect | LongRelative | WordImmediate | ZeroPageWithRelative | ImmediateWithZeroPage | ImmediateWithZeroPageX => 3
+    case LongAbsolute | LongAbsoluteX | LongIndirect | ImmediateWithAbsolute | ImmediateWithAbsoluteX => 4
+    case TripleAbsolute => 7
     case DoesNotExist => 0
   }
 
@@ -621,9 +666,14 @@ case class AssemblyLine(opcode: Opcode.Value, addrMode: AddrMode.Value, var para
     case Absolute => 3001
     case AbsoluteX | AbsoluteY | Indirect => 3002
     case AbsoluteIndexedX => 3003
+    case ZeroPageWithRelative => 3004
+    case ImmediateWithZeroPage => 3005
+    case ImmediateWithZeroPageX => 3006
     case LongAbsolute => 4000
     case LongAbsoluteX => 4001
     case LongIndirect => 4002
+    case ImmediateWithAbsolute => 4003
+    case ImmediateWithAbsoluteX => 4004
     case TripleAbsolute => 7000
     case DoesNotExist => 1
   }
@@ -635,6 +685,24 @@ case class AssemblyLine(opcode: Opcode.Value, addrMode: AddrMode.Value, var para
       parameter.toString + ':'
     } else if (opcode == BYTE) {
       "    !byte " + parameter.toString
+    } else if (addrMode == TripleAbsolute) {
+      parameter match {
+        case StructureConstant(_, List(a,b,c)) => s"    $opcode $a,$b,$c"
+      }
+    } else if (addrMode == ZeroPageWithRelative) {
+      parameter match {
+        case StructureConstant(_, List(a,b)) => s"    $opcode $a,$b"
+      }
+    } else if (addrMode == LongRelative && opcode != BSR) { // BSR on Hudson is always 8-bit short, and on 65CE02 it's always 16-bit
+      s"    L$opcode ${AddrMode.addrModeToString(addrMode, parameter.toString)}"
+    } else if (addrMode == ImmediateWithAbsolute || addrMode == ImmediateWithZeroPage) {
+      parameter match {
+        case StructureConstant(_, List(a,b)) => s"    $opcode #$a,$b"
+      }
+    } else if (addrMode == ImmediateWithAbsoluteX || addrMode == ImmediateWithZeroPageX) {
+      parameter match {
+        case StructureConstant(_, List(a,b)) => s"    $opcode #$a,$b,X"
+      }
     } else if (addrMode == DoesNotExist) {
       s"    ; $opcode"
     } else {

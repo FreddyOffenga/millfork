@@ -4,7 +4,7 @@ import millfork.assembly.mos.opt.{CoarseFlowAnalyzer, CpuStatus, HudsonOptimizat
 import millfork.assembly._
 import millfork.env._
 import millfork.error.{ConsoleLogger, FatalErrorReporting}
-import millfork.node.{MosNiceFunctionProperty, NiceFunctionProperty, Program}
+import millfork.node.{FunctionCallExpression, MosNiceFunctionProperty, NiceFunctionProperty, Position, Program}
 import millfork._
 import millfork.assembly.mos._
 import millfork.assembly.opt.{SingleStatus, Status}
@@ -33,6 +33,7 @@ class MosAssembler(program: Program,
   override def emitInstruction(bank: String, options: CompilationOptions, index: Int, instr: AssemblyLine): Int = {
     import millfork.assembly.mos.AddrMode._
     import millfork.assembly.mos.Opcode._
+    implicit val position = instr.source.map(sl => Position(sl.moduleName, sl.line, 0, 0))
     instr match {
       case AssemblyLine0(BYTE, RawByte, c) =>
         writeByte(bank, index, c)
@@ -41,7 +42,10 @@ class MosAssembler(program: Program,
       case AssemblyLine0(_, RawByte, _) => log.fatal("BYTE opcode failure")
       case AssemblyLine0(LABEL, _, MemoryAddressConstant(Label(labelName))) =>
         val bank0 = mem.banks(bank)
-        labelMap(labelName) = bank0.index -> index
+        labelMap(labelName) = bank -> index
+        index
+      case AssemblyLine0(CHANGED_MEM, DoesNotExist, MemoryAddressConstant(Label(l))) if l.contains("..brk") =>
+        breakpointSet += mem.banks(bank).index -> index
         index
       case AssemblyLine0(_, DoesNotExist, _) =>
         index
@@ -60,15 +64,55 @@ class MosAssembler(program: Program,
         writeByte(bank, index, MosAssembler.opcodeFor(op, am, options))
         writeWord(bank, index + 1, param)
         index + 3
+      case AssemblyLine0(op, am@LongRelative, param) =>
+        writeByte(bank, index, MosAssembler.opcodeFor(op, am, options))
+        // TODO:
+        writeWord(bank, index + 1, param - (index + 3))
+        index + 3
       case AssemblyLine0(op, am@(LongAbsolute | LongAbsoluteX | LongIndirect), param) =>
         writeByte(bank, index, MosAssembler.opcodeFor(op, am, options))
         writeWord(bank, index + 1, param)
         writeByte(bank, index + 3, extractBank(param, options))
         index + 4
+      case AssemblyLine0(op, am@(TripleAbsolute), StructureConstant(_, List(a, b, c))) =>
+        writeByte(bank, index, MosAssembler.opcodeFor(op, am, options))
+        writeWord(bank, index + 1, a)
+        writeWord(bank, index + 3, b)
+        writeWord(bank, index + 5, c)
+        index + 7
+      case AssemblyLine0(op, am@(ZeroPageWithRelative), StructureConstant(_, List(a, b))) =>
+        writeByte(bank, index, MosAssembler.opcodeFor(op, am, options))
+        writeByte(bank, index + 1, a)
+        writeByte(bank, index + 2, AssertByte(b - (index + 3)))
+        index + 3
+      case AssemblyLine0(TST, ImmediateWithZeroPage, StructureConstant(_, List(a, b))) =>
+        MosAssembler.requireHudson(options)
+        writeByte(bank, index, 0x83)
+        writeByte(bank, index + 1, a)
+        writeByte(bank, index + 2, b)
+        index + 3
+      case AssemblyLine0(TST, ImmediateWithZeroPageX, StructureConstant(_, List(a, b))) =>
+        MosAssembler.requireHudson(options)
+        writeByte(bank, index, 0xA3)
+        writeByte(bank, index + 1, a)
+        writeByte(bank, index + 2, b)
+        index + 3
+      case AssemblyLine0(TST, ImmediateWithAbsolute, StructureConstant(_, List(a, b))) =>
+        MosAssembler.requireHudson(options)
+        writeByte(bank, index, 0x93)
+        writeByte(bank, index + 1, a)
+        writeWord(bank, index + 2, b)
+        index + 4
+      case AssemblyLine0(TST, ImmediateWithAbsoluteX, StructureConstant(_, List(a, b))) =>
+        MosAssembler.requireHudson(options)
+        writeByte(bank, index, 0xB3)
+        writeByte(bank, index + 1, a)
+        writeWord(bank, index + 2, b)
+        index + 4
     }
   }
 
-  override def injectLabels(labelMap: Map[String, (Int, Int)], code: List[AssemblyLine]): List[AssemblyLine] = {
+  override def injectLabels(labelMap: Map[String, (String, Int)], code: List[AssemblyLine]): List[AssemblyLine] = {
     import Opcode._
     code.map {
       case l@AssemblyLine(LDA | STA | CMP |
@@ -208,6 +252,20 @@ class MosAssembler(program: Program,
     simpleRtsPropertyScan(_.y)(SetsYTo)
   }
 
+  override def gatherFunctionOptimizationHints(options: CompilationOptions, niceFunctionProperties: mutable.Set[(NiceFunctionProperty, String)], function: FunctionInMemory): Unit = {
+    import MosNiceFunctionProperty._
+    import NiceFunctionProperty._
+    val functionName = function.name
+    if (function.optimizationHints("even")) niceFunctionProperties += Bit0OfA(false) -> functionName
+    if (function.optimizationHints("odd")) niceFunctionProperties += Bit0OfA(true) -> functionName
+    if (function.optimizationHints("preserves_a")) niceFunctionProperties += DoesntChangeA -> functionName
+    if (function.optimizationHints("preserves_x")) niceFunctionProperties += DoesntChangeX -> functionName
+    if (function.optimizationHints("preserves_y")) niceFunctionProperties += DoesntChangeY -> functionName
+    if (function.optimizationHints("preserves_c")) niceFunctionProperties += DoesntChangeC -> functionName
+    if (function.optimizationHints("preserves_memory")) niceFunctionProperties += DoesntWriteMemory -> functionName
+    if (function.optimizationHints("idempotent")) niceFunctionProperties += Idempotent -> functionName
+  }
+
   override def bytePseudoopcode: String = "!byte"
 
   override def deduplicate(options: CompilationOptions, compiledFunctions: mutable.Map[String, CompiledFunction[AssemblyLine]]): Unit =
@@ -219,20 +277,36 @@ object MosAssembler {
   private val opcodes = mutable.Map[(Opcode.Value, AddrMode.Value), Byte]()
   private val illegalOpcodes = mutable.Map[(Opcode.Value, AddrMode.Value), Byte]()
   private val cmosOpcodes = mutable.Map[(Opcode.Value, AddrMode.Value), Byte]()
+  private val sc02Opcodes = mutable.Map[(Opcode.Value, AddrMode.Value), Byte]()
+  private val rockwellOpcodes = mutable.Map[(Opcode.Value, AddrMode.Value), Byte]()
+  private val singleBitBranches = mutable.Map[Opcode.Value, Byte]()
+  private val wdcOpcodes = mutable.Map[(Opcode.Value, AddrMode.Value), Byte]()
   private val cmosNopOpcodes = mutable.Map[(Opcode.Value, AddrMode.Value), Byte]()
   private val ce02Opcodes = mutable.Map[(Opcode.Value, AddrMode.Value), Byte]()
   private val hudsonOpcodes = mutable.Map[(Opcode.Value, AddrMode.Value), Byte]()
+  private val hudsonTransferOpcodes = mutable.Map[Opcode.Value, Byte]()
   private val emulation65816Opcodes = mutable.Map[(Opcode.Value, AddrMode.Value), Byte]()
   private val native65816Opcodes = mutable.Map[(Opcode.Value, AddrMode.Value), Byte]()
+
+  def requireHudson(options: CompilationOptions): Unit = {
+    if (!options.flag(CompilationFlag.EmitHudsonOpcodes)){
+      options.log.fatal("Cannot assemble an unknown opcode TST")
+    }
+  }
 
   def opcodeFor(opcode: Opcode.Value, addrMode: AddrMode.Value, options: CompilationOptions): Byte = {
     val key = opcode -> addrMode
     opcodes.get(key).foreach(return _)
     if (options.flag(CompilationFlag.EmitIllegals)) illegalOpcodes.get(key).foreach(return _)
     if (options.flag(CompilationFlag.EmitCmosOpcodes)) cmosOpcodes.get(key).foreach(return _)
+    if (options.flag(CompilationFlag.EmitSC02Opcodes)) sc02Opcodes.get(key).foreach(return _)
+    if (options.flag(CompilationFlag.EmitRockwellOpcodes)) rockwellOpcodes.get(key).foreach(return _)
+    if (options.flag(CompilationFlag.EmitRockwellOpcodes) && addrMode == AddrMode.ZeroPageWithRelative) singleBitBranches.get(key._1).foreach(return _)
+    if (options.flag(CompilationFlag.EmitWdcOpcodes)) wdcOpcodes.get(key).foreach(return _)
     if (options.flag(CompilationFlag.EmitCmosNopOpcodes)) cmosNopOpcodes.get(key).foreach(return _)
     if (options.flag(CompilationFlag.Emit65CE02Opcodes)) ce02Opcodes.get(key).foreach(return _)
     if (options.flag(CompilationFlag.EmitHudsonOpcodes))  hudsonOpcodes.get(key).foreach(return _)
+    if (options.flag(CompilationFlag.EmitHudsonOpcodes) && addrMode == AddrMode.TripleAbsolute) hudsonTransferOpcodes.get(key._1).foreach(return _)
     if (options.flag(CompilationFlag.EmitEmulation65816Opcodes)) emulation65816Opcodes.get(key).foreach(return _)
     if (options.flag(CompilationFlag.EmitNative65816Opcodes)) native65816Opcodes.get(key).foreach(return _)
     options.log.fatal("Cannot assemble an unknown opcode " + key)
@@ -249,6 +323,26 @@ object MosAssembler {
     cmosOpcodes(op -> am) = x.toByte
   }
 
+  private def sc(op: Opcode.Value, am: AddrMode.Value, x: Int): Unit = {
+    if (x < 0 || x > 0xff) FatalErrorReporting.reportFlyingPig("Invalid code for" + (op -> am))
+    sc02Opcodes(op -> am) = x.toByte
+  }
+
+  private def rw(op: Opcode.Value, am: AddrMode.Value, x: Int): Unit = {
+    if (x < 0 || x > 0xff) FatalErrorReporting.reportFlyingPig("Invalid code for" + (op -> am))
+    rockwellOpcodes(op -> am) = x.toByte
+  }
+
+  private def wd(op: Opcode.Value, am: AddrMode.Value, x: Int): Unit = {
+    if (x < 0 || x > 0xff) FatalErrorReporting.reportFlyingPig("Invalid code for" + (op -> am))
+    wdcOpcodes(op -> am) = x.toByte
+  }
+
+  private def sb(op: Opcode.Value, x: Int): Unit = {
+    if (x < 0 || x > 0xff) FatalErrorReporting.reportFlyingPig("Invalid code for" + (op))
+    singleBitBranches(op) = x.toByte
+  }
+
   private def cn(op: Opcode.Value, am: AddrMode.Value, x: Int): Unit = {
     if (x < 0 || x > 0xff) FatalErrorReporting.reportFlyingPig("Invalid code for" + (op -> am))
     cmosNopOpcodes(op -> am) = x.toByte
@@ -262,6 +356,11 @@ object MosAssembler {
   private def hu(op: Opcode.Value, am: AddrMode.Value, x: Int): Unit = {
     if (x < 0 || x > 0xff) FatalErrorReporting.reportFlyingPig("Invalid code for" + (op -> am))
     hudsonOpcodes(op -> am) = x.toByte
+  }
+
+  private def ht(op: Opcode.Value,x: Int): Unit = {
+    if (x < 0 || x > 0xff) FatalErrorReporting.reportFlyingPig("Invalid code for" + (op))
+    hudsonTransferOpcodes(op) = x.toByte
   }
 
   private def ce(op: Opcode.Value, am: AddrMode.Value, x: Int): Unit = {
@@ -321,6 +420,7 @@ object MosAssembler {
   op(BEQ, Relative, 0xF0)
 
   op(BRK, Implied, 0)
+  op(BRK, Immediate, 0)
 
   op(CMP, Immediate, 0xC9)
   op(CMP, ZeroPage, 0xC5)
@@ -465,6 +565,8 @@ object MosAssembler {
   op(STY, ZeroPageX, 0x94)
   op(STY, Absolute, 0x8C)
 
+  il(KIL, Implied, 0x02) // there are  multiple candidates and some others could be a better choice, but whatever, 02 is fine
+
   il(LAX, ZeroPage, 0xA7)
   il(LAX, ZeroPageY, 0xB7)
   il(LAX, Absolute, 0xAF)
@@ -480,6 +582,8 @@ object MosAssembler {
   il(SAX, IndexedX, 0x83)
   il(AHX, IndexedY, 0x93)
   il(SHY, AbsoluteX, 0x9C)
+  il(SHX, AbsoluteY, 0x9E)
+  il(LAS, AbsoluteY, 0xBB)
 
   il(ANC, Immediate, 0x0B)
   il(ALR, Immediate, 0x4B)
@@ -566,10 +670,10 @@ object MosAssembler {
   cm(CMP, IndexedZ, 0xD2)
   cm(SBC, IndexedZ, 0xF2)
 
-  cm(TSB, ZeroPage, 0x04)
-  cm(TSB, Absolute, 0x0C)
-  cm(TRB, ZeroPage, 0x14)
-  cm(TRB, Absolute, 0x1C)
+  sc(TSB, ZeroPage, 0x04)
+  sc(TSB, Absolute, 0x0C)
+  sc(TRB, ZeroPage, 0x14)
+  sc(TRB, Absolute, 0x1C)
 
   cm(BRA, Relative, 0x80)
   cm(BIT, ZeroPageX, 0x34)
@@ -577,8 +681,41 @@ object MosAssembler {
   cm(INC, Implied, 0x1A)
   cm(DEC, Implied, 0x3A)
   cm(JMP, AbsoluteIndexedX, 0x7C)
-  cm(WAI, Implied, 0xCB)
-  cm(STP, Implied, 0xDB)
+  wd(WAI, Implied, 0xCB)
+  wd(STP, Implied, 0xDB)
+
+  rw(RMB0, ZeroPage, 0x07)
+  rw(RMB1, ZeroPage, 0x17)
+  rw(RMB2, ZeroPage, 0x27)
+  rw(RMB3, ZeroPage, 0x37)
+  rw(RMB4, ZeroPage, 0x47)
+  rw(RMB5, ZeroPage, 0x57)
+  rw(RMB6, ZeroPage, 0x67)
+  rw(RMB7, ZeroPage, 0x77)
+  rw(SMB0, ZeroPage, 0x87)
+  rw(SMB1, ZeroPage, 0x97)
+  rw(SMB2, ZeroPage, 0xa7)
+  rw(SMB3, ZeroPage, 0xb7)
+  rw(SMB4, ZeroPage, 0xc7)
+  rw(SMB5, ZeroPage, 0xd7)
+  rw(SMB6, ZeroPage, 0xe7)
+  rw(SMB7, ZeroPage, 0xf7)
+  sb(BBR0, 0x0f)
+  sb(BBR1, 0x1f)
+  sb(BBR2, 0x2f)
+  sb(BBR3, 0x3f)
+  sb(BBR4, 0x4f)
+  sb(BBR5, 0x5f)
+  sb(BBR6, 0x6f)
+  sb(BBR7, 0x7f)
+  sb(BBS0, 0x8f)
+  sb(BBS1, 0x9f)
+  sb(BBS2, 0xaf)
+  sb(BBS3, 0xbf)
+  sb(BBS4, 0xcf)
+  sb(BBS5, 0xdf)
+  sb(BBS6, 0xef)
+  sb(BBS7, 0xff)
 
   ce(CPZ, Immediate, 0xC2)
   ce(CPZ, ZeroPage, 0xD4)
@@ -588,8 +725,7 @@ object MosAssembler {
   ce(DEC_W, ZeroPage, 0xC3)
   ce(INC_W, ZeroPage, 0xE3)
   ce(ASL_W, Absolute, 0xCB)
-  // TODO: or is it ROL_W?
-  ce(ROR_W, Absolute, 0xEB)
+  ce(ROL_W, Absolute, 0xEB)
   ce(ASR, Implied, 0x43)
   ce(ASR, ZeroPage, 0x44)
   ce(ASR, ZeroPageX, 0x54)
@@ -606,20 +742,46 @@ object MosAssembler {
   ce(PHW, Absolute, 0xFC)
   ce(PHZ, Implied, 0xDB)
   ce(PLZ, Implied, 0xFB)
-//  ce(CLE, Implied, )
-//  ce(SEE, Implied, )
-//  ce(BSR, , )
+  ce(JSR, Indirect, 0x22)
+  ce(JSR, AbsoluteIndexedX, 0x23)
+  ce(CLE, Implied, 0x02)
+  ce(SEE, Implied, 0x03)
+  ce(NEG, Implied, 0x42)
+  ce(MAP, Implied, 0x5C)
+  ce(LDA, IndexedSY, 0xE2)
+  ce(STA, IndexedSY, 0x82)
+  ce(BSR, LongRelative, 0x63)
+  ce(BRA, LongRelative, 0x83)
+  ce(BPL, LongRelative, 0x13)
+  ce(BMI, LongRelative, 0x33)
+  ce(BVC, LongRelative, 0x53)
+  ce(BVS, LongRelative, 0x73)
+  ce(BCC, LongRelative, 0x93)
+  ce(BCS, LongRelative, 0xb3)
+  ce(BNE, LongRelative, 0xd3)
+  ce(BEQ, LongRelative, 0xf3)
 
+  hu(BSR, Relative, 0x44)
   hu(CLY, Implied, 0xC2)
   hu(CLX, Implied, 0x82)
   hu(CLA, Implied, 0x62)
   hu(CSH, Implied, 0xD4)
   hu(CSL, Implied, 0x54)
+  hu(SET, Implied, 0xF4)
   hu(HuSAX, Implied, 0x22)
   hu(SAY, Implied, 0x42)
   hu(SXY, Implied, 0x02)
   hu(TAM, Immediate, 0x53)
   hu(TMA, Immediate, 0x43)
+  hu(ST0, Immediate, 0x03)
+  hu(ST1, Immediate, 0x13)
+  hu(ST2, Immediate, 0x23)
+  hu(STP, Implied, 0xDB)
+  ht(TAI, 0xf3)
+  ht(TIA, 0xe3)
+  ht(TII, 0x73)
+  ht(TIN, 0xd3)
+  ht(TDD, 0xc3)
 
   em(ORA, Stack, 0x03)
   em(ORA, IndexedSY, 0x13)
@@ -657,17 +819,25 @@ object MosAssembler {
   na(LDA, LongIndexedY, 0xB7)
   na(LDA, LongAbsolute, 0xAF)
   na(LDA, LongAbsoluteX, 0xBF)
-  em(CMP, Stack, 0xA3)
-  em(CMP, IndexedSY, 0xB3)
-  na(CMP, LongIndexedZ, 0xA7)
-  na(CMP, LongIndexedY, 0xB7)
-  na(CMP, LongAbsolute, 0xAF)
-  na(CMP, LongAbsoluteX, 0xBF)
+  em(CMP, Stack, 0xC3)
+  em(CMP, IndexedSY, 0xD3)
+  na(CMP, LongIndexedZ, 0xC7)
+  na(CMP, LongIndexedY, 0xD7)
+  na(CMP, LongAbsolute, 0xCF)
+  na(CMP, LongAbsoluteX, 0xDF)
+  em(SBC, Stack, 0xE3)
+  em(SBC, IndexedSY, 0xF3)
+  na(SBC, LongIndexedZ, 0xE7)
+  na(SBC, LongIndexedY, 0xF7)
+  na(SBC, LongAbsolute, 0xEF)
+  na(SBC, LongAbsoluteX, 0xFF)
 
   em(COP, Immediate, 0x02)
   em(XBA, Implied, 0xEB)
   em(TXY, Implied, 0x9B)
   em(TYX, Implied, 0xBB)
+  em(JSR, LongAbsolute, 0x22)
+  em(JSR, AbsoluteIndexedX, 0xFC)
 
 
   na(RTL, Implied, 0x6B)

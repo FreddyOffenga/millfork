@@ -32,7 +32,13 @@ object MLine {
 
   def longBranch(opcode: MOpcode.Value, label: String): MLine = longBranch(opcode, Label(label))
 
+  def shortBranch(opcode: MOpcode.Value, label: Label): MLine = MLine(opcode, Relative, label.toAddress)
+
+  def shortBranch(opcode: MOpcode.Value, label: String): MLine = shortBranch(opcode, Label(label))
+
   def tfr(source: M6809Register.Value, target: M6809Register.Value): MLine = MLine(TFR, TwoRegisters(source, target), Constant.Zero)
+
+  def exg(source: M6809Register.Value, target: M6809Register.Value): MLine = MLine(EXG, TwoRegisters(source, target), Constant.Zero)
 
   def pp(opcode: MOpcode.Value, registers: M6809Register.Value*): MLine = MLine(opcode, RegisterSet(registers.toSet), Constant.Zero)
 
@@ -41,6 +47,15 @@ object MLine {
 
   def indexedX(opcode: MOpcode.Value, offset: Constant): MLine =
     MLine(opcode, Indexed(M6809Register.X, indirect = false), offset)
+
+  def indexedX(opcode: MOpcode.Value, offset: Int): MLine =
+    MLine(opcode, Indexed(M6809Register.X, indirect = false), Constant(offset))
+
+  def indexedU(opcode: MOpcode.Value, offset: Int): MLine =
+    MLine(opcode, Indexed(M6809Register.U, indirect = false), Constant(offset))
+
+  def indexedY(opcode: MOpcode.Value, offset: Int): MLine =
+    MLine(opcode, Indexed(M6809Register.Y, indirect = false), Constant(offset))
 
   def accessAndPullS(opcode: MOpcode.Value): MLine =
     MLine(opcode, PostIncremented(M6809Register.S, 1, indirect = false), Constant.Zero)
@@ -72,11 +87,12 @@ object MLine {
 
   def variable(ctx: CompilationContext, opcode : MOpcode.Value, variable: Variable, offset: Int = 0): MLine = {
     variable match {
-      case v: VariableInMemory => MLine.absolute(opcode, v.toAddress)
+      case v: VariableInMemory => MLine.absolute(opcode, v.toAddress + offset)
       case v: StackVariable =>
-        if (ctx.options.flag(CompilationFlag.UseUForStack)) MLine(opcode, Indexed(M6809Register.U, indirect = false), NumericConstant(v.baseOffset, 1))
-        else if (ctx.options.flag(CompilationFlag.UseYForStack)) MLine(opcode, Indexed(M6809Register.Y, indirect = false), NumericConstant(v.baseOffset, 1))
-        else MLine(opcode, Indexed(M6809Register.S, indirect = false), NumericConstant(v.baseOffset + ctx.extraStackOffset, 1))
+        val size = variable.typ.size
+        if (ctx.options.flag(CompilationFlag.UseUForStack)) MLine(opcode, Indexed(M6809Register.U, indirect = false), NumericConstant(v.baseOffset + offset, size))
+        else if (ctx.options.flag(CompilationFlag.UseYForStack)) MLine(opcode, Indexed(M6809Register.Y, indirect = false), NumericConstant(v.baseOffset + offset, size))
+        else MLine(opcode, Indexed(M6809Register.S, indirect = false), NumericConstant(v.baseOffset + ctx.extraStackOffset + offset, size))
       case _ => ???
     }
   }
@@ -152,6 +168,7 @@ case class MLine(opcode: MOpcode.Value, addrMode: MAddrMode, parameter: Constant
 
   def changesRegister(reg: M6809Register.Value): Boolean = {
     import M6809Register._
+    if (MOpcode.NotActualOpcodes(opcode)) return false
     def overlaps(other: M6809Register.Value): Boolean = {
       if (reg == D && (other == A || other == B))  true
       else if (other == D && (reg == A || reg == B))  true
@@ -169,8 +186,9 @@ case class MLine(opcode: MOpcode.Value, addrMode: MAddrMode, parameter: Constant
       case (EXG, TwoRegisters(r1, r2)) => overlaps(r1) || overlaps(r2)
       case (op, _) if MOpcode.ChangesAAlways(op) => overlaps(A) || addrMode.changesRegister(reg)
       case (op, _) if MOpcode.ChangesBAlways(op) => overlaps(B) || addrMode.changesRegister(reg)
-      case (LDB, _) => overlaps(B) || addrMode.changesRegister(reg)
-      case (LDD, _) => overlaps(D) || addrMode.changesRegister(reg)
+      case (LDA | ANDA | ADDA | ADCA | SUBA | SBCA | EORA | ORA | BITA, _) => overlaps(A) || addrMode.changesRegister(reg)
+      case (LDB | ANDB | ADDB | ADCB | SUBB | SBCB | EORB | ORB | BITB, _) => overlaps(B) || addrMode.changesRegister(reg)
+      case (LDD | ADDD | SUBD, _) => overlaps(D) || addrMode.changesRegister(reg)
       case (LDU | LEAU, _) => reg == U || addrMode.changesRegister(reg)
       case (LDS | LEAS, _) => reg == S || addrMode.changesRegister(reg)
       case (LDX | LEAX, _) => reg == X || addrMode.changesRegister(reg)
@@ -178,12 +196,20 @@ case class MLine(opcode: MOpcode.Value, addrMode: MAddrMode, parameter: Constant
       case (MUL, _) => overlaps(D)
       case (ABX, _) => reg == X
       case (NOP | SWI | SWI2 | SWI3 | SYNC, _) => false
-      case _ => true // TODO
+      case (STA | STB | STD | STS | STU | STX | STY, _) => false
+      case (SEX | DAA, _) => overlaps(A)
+      case (JSR | SWI | SWI2 | SWI3, _) => true
+      case _ => addrMode.changesRegister(reg)
     }
   }
 
+  def changesCarryFlag: Boolean = !MOpcode.NotActualOpcodes(opcode) && !MOpcode.PreservesC(opcode)
+
+
+
   def readsRegister(reg: M6809Register.Value): Boolean = {
     import M6809Register._
+    if (MOpcode.NotActualOpcodes(opcode)) return false
     def overlaps(other: M6809Register.Value): Boolean = {
       if (reg == D && (other == A || other == B))  true
       else if (other == D && (reg == A || reg == B))  true
@@ -228,15 +254,17 @@ case class MLine(opcode: MOpcode.Value, addrMode: MAddrMode, parameter: Constant
       case MUL => overlaps(D)
       case ABX => reg == X || overlaps(B)
       case NOP | SWI | SWI2 | SWI3 | SYNC => false
+      case LDB | LDA | LDX | LDY | LDU => false
       case INC | DEC | ROL | ROR | ASL | ASR | LSR | CLR | COM | NEG | TST => false // variants for A and B handled before
       case op if Branching(op) => false
-      case JMP => false
+      case JMP | RTS => false
       case _ => true // TODO
     }
   }
 
   def readsMemory(): Boolean = {
     import MOpcode._
+    if (MOpcode.NotActualOpcodes(opcode)) return false
     val opcodeIsForReading = opcode match {
       case LDA | LDB | LDD | LDX | LDY | LDU | LDS | PULU | PULS => true
       case ADDA | SUBA | ADCA | SBCA | ORA | EORA | ANDA | CMPA | BITA => true
@@ -265,6 +293,7 @@ case class MLine(opcode: MOpcode.Value, addrMode: MAddrMode, parameter: Constant
 
   def changesMemory(): Boolean = {
     import MOpcode._
+    if (NotActualOpcodes(opcode)) return false
     val opcodeIsForWriting = opcode match {
       case LDA | LDB | LDD | LDX | LDY | LDU | LDS | PULU | PULS => false
       case ADDA | SUBA | ADCA | SBCA | ORA | EORA | ANDA | CMPA | BITA => false

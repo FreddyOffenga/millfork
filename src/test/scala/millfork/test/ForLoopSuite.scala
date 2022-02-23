@@ -11,7 +11,7 @@ import org.scalatest.{FunSuite, Matchers}
 class ForLoopSuite extends FunSuite with Matchers {
 
   test("For-to") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | word output @$c000
         | void main () {
@@ -21,11 +21,11 @@ class ForLoopSuite extends FunSuite with Matchers {
         |     output += i
         |   }
         | }
-      """.stripMargin)(_.readByte(0xc000) should equal(15))
+      """.stripMargin)(_.readWord(0xc000) should equal(15))
   }
 
   test("For-to 2") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | word output @$c000
         | byte five
@@ -40,11 +40,11 @@ class ForLoopSuite extends FunSuite with Matchers {
         | void init() {
         |   five = 5
         | }
-      """.stripMargin)(_.readByte(0xc000) should equal(15))
+      """.stripMargin)(_.readWord(0xc000) should equal(15))
   }
 
   test("For-downto") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | word output @$c000
         | void main () {
@@ -54,11 +54,11 @@ class ForLoopSuite extends FunSuite with Matchers {
         |     output += i
         |   }
         | }
-      """.stripMargin)(_.readByte(0xc000) should equal(15))
+      """.stripMargin)(_.readWord(0xc000) should equal(15))
   }
 
   test("For-downto 2") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | array output [55] @$c000
         | void main () {
@@ -78,7 +78,7 @@ class ForLoopSuite extends FunSuite with Matchers {
   }
 
   test("For-downto 3") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | array output [55] @$c000
         | void main () {
@@ -102,7 +102,7 @@ class ForLoopSuite extends FunSuite with Matchers {
   }
 
   test("For-until") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | word output @$c000
         | void main () {
@@ -112,11 +112,11 @@ class ForLoopSuite extends FunSuite with Matchers {
         |     output += i
         |   }
         | }
-      """.stripMargin)(_.readByte(0xc000) should equal(15))
+      """.stripMargin)(_.readWord(0xc000) should equal(15))
   }
 
   test("For-parallelto") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | word output @$c000
         | void main () {
@@ -126,11 +126,11 @@ class ForLoopSuite extends FunSuite with Matchers {
         |     output += i
         |   }
         | }
-      """.stripMargin)(_.readByte(0xc000) should equal(15))
+      """.stripMargin)(_.readWord(0xc000) should equal(15))
   }
 
   test("For-paralleluntil") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | word output @$c000
         | void main () {
@@ -140,11 +140,11 @@ class ForLoopSuite extends FunSuite with Matchers {
         |     output += i
         |   }
         | }
-      """.stripMargin)(_.readByte(0xc000) should equal(15))
+      """.stripMargin)(_.readWord(0xc000) should equal(15))
   }
 
   test("Various loops") {
-    EmuUnoptimizedCrossPlatformRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuUnoptimizedCrossPlatformRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | void init() {
         |     zero = 0
@@ -185,7 +185,7 @@ class ForLoopSuite extends FunSuite with Matchers {
   }
 
   test("Memcpy") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | array output[5]@$c001
         | array input = [0,1,4,9,16,25,36,49]
@@ -203,7 +203,7 @@ class ForLoopSuite extends FunSuite with Matchers {
   }
 
   test("Memset with index") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | array output[5]@$c001
         | void main () {
@@ -220,7 +220,7 @@ class ForLoopSuite extends FunSuite with Matchers {
   }
 
   test("Memset with pointer") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | array output[5]@$c001
         | void main () {
@@ -237,7 +237,7 @@ class ForLoopSuite extends FunSuite with Matchers {
   }
 
   test("Screen fill") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | array output[$400]@$c000
         | void main () {
@@ -255,7 +255,7 @@ class ForLoopSuite extends FunSuite with Matchers {
   }
 
   test("Various bulk operations") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | array output0[5]@$c000
         | array output1[5]@$c010
@@ -290,7 +290,7 @@ class ForLoopSuite extends FunSuite with Matchers {
   }
 
   test("Modifying whole array") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Motorola6809)(
       """
         | array output[$ff]@$c000
         | void main () {
@@ -355,7 +355,7 @@ class ForLoopSuite extends FunSuite with Matchers {
   }
 
   test("Edge cases - positive") {
-    EmuUnoptimizedCrossPlatformRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086)("""
+    EmuUnoptimizedCrossPlatformRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8080, Cpu.Sharp, Cpu.Intel8086, Cpu.Motorola6809)("""
         | void main() {
         |     byte i
         |     for i,0,until,256 { f() }
@@ -410,7 +410,7 @@ class ForLoopSuite extends FunSuite with Matchers {
 
 
   test("For each") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | array output[$400]@$c000
         | void main () {
@@ -448,7 +448,7 @@ class ForLoopSuite extends FunSuite with Matchers {
         |  p = a.addr
         |  sum = 0
         |  for i,0,paralleluntil,100 { sum += a[i] }
-        |  for i,0,paralleluntil,100 { sum +'= a[i] }
+        |  for i,0,paralleluntil,100 { sum $+= a[i] }
         |  for i,0,paralleluntil,100 { sum &= a[i] }
         |  for i,0,until,100 { sum &= a[i] }
         |  for i,0,until,50 { sum &= a[i+1] }
@@ -478,4 +478,118 @@ class ForLoopSuite extends FunSuite with Matchers {
         |}
       """.stripMargin).readByte(0xc000) should equal(45)
   }
+
+  test("Some pointers in loops") {
+    val code =
+      """
+        |struct Sprite {
+        |    byte y
+        |}
+        |
+        |array(Sprite) sprites [20]
+        |Sprite test
+        |
+        |void main() {
+        |    byte i
+        |    test = Sprite(1)
+        |    pointer.Sprite test_pointer
+        |    test_pointer = test.pointer
+        |
+        |    sprites[0] = Sprite(5)
+        |    pointer.Sprite current_sprite
+        |    current_sprite = pointer.Sprite(sprites.pointer)
+        |    for i,0,until,20 {
+        |        current_sprite->y = test_pointer->y
+        |    }
+        |}
+        |""".stripMargin
+    EmuUnoptimizedCrossPlatformRun(Cpu.Mos, Cpu.Z80, Cpu.Motorola6809) (code) { m =>
+      // OK
+    }
+  }
+
+
+  test("Looping across arrays") {
+    EmuUnoptimizedCrossPlatformRun(Cpu.Mos, Cpu.Z80, Cpu.Motorola6809)(
+      """
+        |
+        | array source = [1,2,3,4,5]
+        | array target[5] @$c000
+        | void main() {
+        |   byte i
+        |   for i:source {
+        |     target[i] = source[i]
+        |   }
+        | }
+        |""".stripMargin) { m =>
+      m.readByte(0xc000) should equal(1)
+      m.readByte(0xc001) should equal(2)
+      m.readByte(0xc002) should equal(3)
+      m.readByte(0xc003) should equal(4)
+      m.readByte(0xc004) should equal(5)
+    }
+  }
+  test("Looping across arrays 2") {
+    EmuUnoptimizedCrossPlatformRun(Cpu.Mos, Cpu.Z80, Cpu.Motorola6809)(
+      """
+        |
+        | array source = [1,2,3,4,5]
+        | array target[5] @$c000
+        | void main() {
+        |   byte i
+        |   byte w
+        |   for i,w:source {
+        |     target[i] = w
+        |   }
+        | }
+        |""".stripMargin) { m =>
+      m.readByte(0xc000) should equal(1)
+      m.readByte(0xc001) should equal(2)
+      m.readByte(0xc002) should equal(3)
+      m.readByte(0xc003) should equal(4)
+      m.readByte(0xc004) should equal(5)
+    }
+  }
+  test("Looping across arrays 3") {
+    EmuUnoptimizedCrossPlatformRun(Cpu.Mos, Cpu.Z80, Cpu.Motorola6809)(
+      """
+        |
+        | array source = [1,2,3,4,5]
+        | array target[5] @$c000
+        | void main() {
+        |   byte i
+        |   pointer.byte p
+        |   for i,p:source {
+        |     target[i] = p[0]
+        |   }
+        | }
+        |""".stripMargin) { m =>
+      m.readByte(0xc000) should equal(1)
+      m.readByte(0xc001) should equal(2)
+      m.readByte(0xc002) should equal(3)
+      m.readByte(0xc003) should equal(4)
+      m.readByte(0xc004) should equal(5)
+    }
+  }
+  test("Looping across arrays 4") {
+    EmuUnoptimizedCrossPlatformRun(Cpu.Mos, Cpu.Z80, Cpu.Motorola6809)(
+      """
+        |
+        | array target[5] @$c000 = [1,2,3,4,5]
+        | void main() {
+        |   byte i
+        |   pointer.byte p
+        |   for i,p:target {
+        |     p[0] += 1
+        |   }
+        | }
+        |""".stripMargin) { m =>
+      m.readByte(0xc000) should equal(2)
+      m.readByte(0xc001) should equal(3)
+      m.readByte(0xc002) should equal(4)
+      m.readByte(0xc003) should equal(5)
+      m.readByte(0xc004) should equal(6)
+    }
+  }
+
 }

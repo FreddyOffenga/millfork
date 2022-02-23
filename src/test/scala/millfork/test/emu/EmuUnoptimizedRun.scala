@@ -12,6 +12,10 @@ object EmuUnoptimizedRicohRun extends EmuRun(Cpu.Ricoh, Nil, Nil)
 
 object EmuUnoptimizedCmosRun extends EmuRun(Cpu.Cmos, Nil, Nil)
 
+object EmuUnoptimizedCE02Run extends EmuRun(Cpu.CE02, Nil, Nil)
+
+object EmuUnoptimizedHudsonRun extends EmuRun(Cpu.HuC6280, Nil, Nil)
+
 object EmuUnoptimizedNative65816Run extends EmuRun(Cpu.Sixteen, Nil, Nil) {
   override def native16: Boolean = true
 }
@@ -23,6 +27,8 @@ object EmuUnoptimizedIntel8080Run extends EmuZ80Run(Cpu.Intel8080, Nil, Nil)
 object EmuUnoptimizedIntel8085Run extends EmuZ80Run(Cpu.Intel8085, Nil, Nil)
 
 object EmuUnoptimizedZ80NextRun extends EmuZ80Run(Cpu.Z80Next, Nil, Nil)
+
+object EmuUnoptimizedR800Run extends EmuZ80Run(Cpu.R800, Nil, Nil)
 
 object EmuUnoptimizedIntel8086Run extends EmuI86Run(Nil, Nil)
 

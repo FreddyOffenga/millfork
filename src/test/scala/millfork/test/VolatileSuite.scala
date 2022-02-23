@@ -10,14 +10,18 @@ import org.scalatest.{FunSuite, Matchers}
 class VolatileSuite extends FunSuite with Matchers {
 
   test("Basic volatile test") {
-    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8086)(
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8086, Cpu.Motorola6809)(
       """
         | word addr @$c000
         | volatile byte output @$c0ea
+        | volatile byte unused_but_should_exist
+        | byte unused_global
         | byte thing
         | void main () {
+        |   static volatile byte unused_local
         |   f(55)
         |   addr = f.addr
+        |   unused_local = 55
         | }
         | noinline void f(byte x) {
         |   output = 5
@@ -32,6 +36,35 @@ class VolatileSuite extends FunSuite with Matchers {
         if (m.readWord(f) == 0xc0ea) count +=1
         f += 1
       } while (count < 2)
+    }
+  }
+
+  test("Volatile struct fields test 1") {
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8086, Cpu.Motorola6809)(
+      """
+        | struct s { volatile byte b }
+        | s output@$c000
+        | void main () {
+        |   output.b = 1
+        |   output.b = 2
+        | }
+      """.stripMargin) { m =>
+      m.readByte(0xc000) should equal(2)
+    }
+  }
+
+  test("Volatile struct fields test 2") {
+    EmuCrossPlatformBenchmarkRun(Cpu.Mos, Cpu.Z80, Cpu.Intel8086, Cpu.Motorola6809)(
+      """
+        | struct s { volatile byte b }
+        | s output@$c000
+        | void main () {
+        |   const pointer.s p = output.pointer
+        |   p[0].b = 1
+        |   p[0].b = 2
+        | }
+      """.stripMargin) { m =>
+      m.readByte(0xc000) should equal(2)
     }
   }
 }

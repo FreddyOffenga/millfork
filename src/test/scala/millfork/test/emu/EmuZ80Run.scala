@@ -18,6 +18,7 @@ import millfork.node.opt.NodeOptimization
 import millfork.output.{MemoryBank, Z80Assembler}
 import millfork.parser.{MosParser, PreprocessingResult, Preprocessor, Z80Parser}
 import millfork._
+import millfork.assembly.z80.opt.VeryLateI80AssemblyOptimizations
 import millfork.compiler.z80.Z80Compiler
 import org.scalatest.Matchers
 
@@ -29,12 +30,14 @@ import scala.collection.mutable
   */
 object EmuZ80Run {
 
+  val secondBytesOfMulOnR800: Set[Int] = Set(0xf9, 0xc1, 0xc9, 0xd1, 0xf9, 0xe1, 0xe9, 0xc3, 0xd3, 0xe3, 0xf3)
+
   private def preload(cpu: millfork.Cpu.Value, filename: String):  Option[Program] = {
     TestErrorReporting.log.info(s"Loading $filename for $cpu")
     val source = Files.readAllLines(Paths.get(filename), StandardCharsets.US_ASCII).asScala.mkString("\n")
     val options = CompilationOptions(EmuPlatform.get(cpu), Map(
           CompilationFlag.LenientTextEncoding -> true
-        ), None, 0, Map(), JobContext(TestErrorReporting.log, new LabelGenerator))
+        ), None, 0, Map(), EmuPlatform.textCodecRepository, JobContext(TestErrorReporting.log, new LabelGenerator))
     val PreprocessingResult(preprocessedSource, features, _) = Preprocessor.preprocessForTest(options, source)
     TestErrorReporting.log.debug(s"Features: $features")
     TestErrorReporting.log.info(s"Parsing $filename")
@@ -55,7 +58,7 @@ object EmuZ80Run {
   private def get(cpu: millfork.Cpu.Value, path: String): Program =
     synchronized { cache.getOrElseUpdate(cpu->path, preload(cpu, path)).getOrElse(throw new IllegalStateException()) }
 
-  def cachedMath(cpu: millfork.Cpu.Value): Program = get(cpu, "include/i80_math.mfk")
+  def cachedMath(cpu: millfork.Cpu.Value): Program = get(cpu, "include/i80/i80_math.mfk")
   def cachedStdio(cpu: millfork.Cpu.Value): Program = get(cpu, "src/test/resources/include/dummy_stdio.mfk")
 }
 
@@ -76,7 +79,8 @@ class EmuZ80Run(cpu: millfork.Cpu.Value, nodeOptimizations: List[NodeOptimizatio
     val log = TestErrorReporting.log
     println(source)
     val platform = EmuPlatform.get(cpu)
-    val extraFlags = Map(
+    var extraFlags = Map(
+      CompilationFlag.UseOptimizationHints -> true,
       CompilationFlag.DangerousOptimizations -> true,
       CompilationFlag.EnableInternalTestSyntax -> true,
       CompilationFlag.InlineFunctions -> this.inline,
@@ -85,8 +89,12 @@ class EmuZ80Run(cpu: millfork.Cpu.Value, nodeOptimizations: List[NodeOptimizatio
       CompilationFlag.SubroutineExtraction -> optimizeForSize,
       CompilationFlag.EmitIllegals -> (cpu == millfork.Cpu.Z80 || cpu == millfork.Cpu.Intel8085 || cpu == millfork.Cpu.Z80Next),
       CompilationFlag.EmitZ80NextOpcodes -> (cpu == millfork.Cpu.Z80Next),
+      CompilationFlag.EmitR800Opcodes -> (cpu == millfork.Cpu.R800),
       CompilationFlag.LenientTextEncoding -> true)
-    val options = CompilationOptions(platform, millfork.Cpu.defaultFlags(cpu).map(_ -> true).toMap ++ extraFlags, None, 0, Map(), JobContext(log, new LabelGenerator))
+    if (source.contains("intel_syntax")) {
+      extraFlags += CompilationFlag.UseIntelSyntaxForOutput -> true
+    }
+    val options = CompilationOptions(platform, millfork.Cpu.defaultFlags(cpu).map(_ -> true).toMap ++ extraFlags, None, 0, Map(), EmuPlatform.textCodecRepository, JobContext(log, new LabelGenerator))
     println(cpu)
     println(options.flags.filter(_._2).keys.toSeq.sorted)
     log.hasErrors = false
@@ -143,11 +151,11 @@ class EmuZ80Run(cpu: millfork.Cpu.Value, nodeOptimizations: List[NodeOptimizatio
         val env2 = new Environment(None, "", CpuFamily.I80, options)
         env2.collectDeclarations(program, options)
         val assembler = new Z80Assembler(program, env2, platform)
-        val output = assembler.assemble(callGraph, assemblyOptimizations, options)
+        val output = assembler.assemble(callGraph, assemblyOptimizations, options, VeryLateI80AssemblyOptimizations.All)
         println(";;; compiled: -----------------")
         output.asm.takeWhile(s => !(s.startsWith(".") && s.contains("= $"))).filterNot(_.contains("////; DISCARD_")).foreach(println)
         println(";;; ---------------------------")
-        assembler.labelMap.foreach { case (l, (_, addr)) => println(f"$l%-15s $$$addr%04x") }
+        assembler.labelMap.foreach { case (l, (_, addr)) => println(f"$l%-15s $$$addr%04x${assembler.endLabelMap.get(l)match{case Some((c,e)) => f"-$$$e%04x  $c%s"; case _ => ""}}%s") }
 
         val optimizedSize = assembler.mem.banks("default").initialized.count(identity).toLong
         if (unoptimizedSize == optimizedSize) {
@@ -167,6 +175,11 @@ class EmuZ80Run(cpu: millfork.Cpu.Value, nodeOptimizations: List[NodeOptimizatio
         (0xff00 to 0xffff).foreach{i =>
           memoryBank.readable(i) = true
           memoryBank.writeable(i) = true
+        }
+        if (source.contains("w&x")) {
+          for (i <- 0 until 0x10000) {
+            memoryBank.writeable(i) = true
+          }
         }
 
         // LD SP,$fffe
@@ -189,26 +202,35 @@ class EmuZ80Run(cpu: millfork.Cpu.Value, nodeOptimizations: List[NodeOptimizatio
           method
         }
         val timings = platform.cpu match {
-          case millfork.Cpu.Z80 | millfork.Cpu.Intel8080 =>
-            val cpu = new Z80Core(Z80Memory(memoryBank), DummyIO)
-            cpu.reset()
-            cpu.setProgramCounter(0x1ed)
-            cpu.resetTStates()
-            while (!cpu.getHalt) {
-              cpu.executeOneInstruction()
-              if (resetN) {
-                resetNMethod.invoke(cpu)
+          case millfork.Cpu.Z80 | millfork.Cpu.Intel8080 | millfork.Cpu.R800 =>
+            val hasMultiplications = (platform.cpu == millfork.Cpu.R800) && ((0x200 to 0xfffe).exists { addr =>
+              val b0 = memoryBank.output(addr)
+              val b1 = memoryBank.output(addr + 1)
+              b0.&(0xff) == 0xED && EmuZ80Run.secondBytesOfMulOnR800(b1.&(0xff))
+            })
+            if (hasMultiplications) {
+              Timings(-1, -1) -> memoryBank
+            } else {
+              val cpu = new Z80Core(Z80Memory(memoryBank), DummyIO)
+              cpu.reset()
+              cpu.setProgramCounter(0x1ed)
+              cpu.resetTStates()
+              while (!cpu.getHalt) {
+                cpu.executeOneInstruction()
+                if (resetN) {
+                  resetNMethod.invoke(cpu)
+                }
+                if (cpu.getSP.&(0xffff) < 0xd002) {
+                  log.debug("stack dump:")
+                  (0xD000 until 0xD0FF).map(memoryBank.output).grouped(16).map(_.map(i => f"$i%02x").mkString(" ")).foreach(log.debug(_))
+                  throw new IllegalStateException("stack overflow")
+                }
+                //              dump(cpu)
+                cpu.getTStates should be < TooManyCycles
               }
-              if (cpu.getSP.&(0xffff) < 0xd002) {
-                log.debug("stack dump:")
-                (0xD000 until 0xD0FF).map(memoryBank.output).grouped(16).map(_.map(i => f"$i%02x").mkString(" ")).foreach(log.debug(_))
-                throw new IllegalStateException("stack overflow")
-              }
-//              dump(cpu)
-              cpu.getTStates should be < TooManyCycles
+              val tStates = cpu.getTStates
+              Timings(tStates, tStates) -> memoryBank
             }
-            val tStates = cpu.getTStates
-            Timings(tStates, tStates) -> memoryBank
           case millfork.Cpu.Sharp =>
             var ticks = 0L
             val cpu = GameboyStubs(memoryBank).cpu
